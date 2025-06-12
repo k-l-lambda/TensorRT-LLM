@@ -155,6 +155,8 @@ def chat_stream_post_processor(rsp: GenerationResultBase, args: ChatPostprocArgs
                 delta_message = DeltaMessage(
                     reasoning_content=reasoning_delta_text)
             else:
+                # For streaming, we don't parse tool calls in real-time
+                # Tool calls will be parsed at the end when the response is complete
                 delta_message = DeltaMessage(
                     content=delta_text, reasoning_content=reasoning_delta_text)
 
@@ -193,6 +195,47 @@ def chat_stream_post_processor(rsp: GenerationResultBase, args: ChatPostprocArgs
     return res
 
 
+def _parse_tool_calls_from_text(text: str) -> tuple[str, List[ToolCall]]:
+    """
+    Parse tool calls from generated text and return cleaned content and tool calls.
+    
+    Args:
+        text: Generated text that may contain tool calls
+        
+    Returns:
+        Tuple of (cleaned_content, tool_calls_list)
+    """
+    import re
+    import json
+    
+    tool_calls = []
+    
+    # Pattern to match <tool_call>...</tool_call>
+    tool_call_pattern = r'<tool_call>(.*?)</tool_call>'
+    matches = re.findall(tool_call_pattern, text, re.DOTALL)
+    
+    for match in matches:
+        try:
+            tool_data = json.loads(match.strip())
+            tool_call = ToolCall(
+                type="function",
+                function=FunctionCall(
+                    name=tool_data.get("name", ""),
+                    arguments=json.dumps(tool_data.get("arguments", {}), ensure_ascii=False)
+                )
+            )
+            tool_calls.append(tool_call)
+        except (json.JSONDecodeError, KeyError) as e:
+            # If parsing fails, skip this tool call
+            continue
+    
+    # Clean the text by removing tool call tags
+    cleaned_text = text
+    if tool_calls:
+        cleaned_text = re.sub(tool_call_pattern, '', text, flags=re.DOTALL).strip()
+    
+    return cleaned_text, tool_calls
+
 @nvtx_range_debug("chat_response_post_processor")
 def chat_response_post_processor(rsp: GenerationResultBase, args: ChatPostprocArgs) -> ChatCompletionResponse:
     choices: List[ChatCompletionResponseChoice] = []
@@ -215,8 +258,20 @@ def chat_response_post_processor(rsp: GenerationResultBase, args: ChatPostprocAr
         else:
             if text is None:
                 text = ""
-            message = ChatMessage(
-                role=role, content=text, reasoning_content=reasoning_text)
+            
+            # Parse tool calls from text if tools are available
+            if args.tools and len(args.tools) > 0:
+                cleaned_content, tool_calls = _parse_tool_calls_from_text(text)
+                message = ChatMessage(
+                    role=role,
+                    content=cleaned_content if cleaned_content else "",
+                    reasoning_content=reasoning_text,
+                    tool_calls=tool_calls
+                )
+            else:
+                message = ChatMessage(
+                    role=role, content=text, reasoning_content=reasoning_text)
+                    
         disaggregated_params = to_disaggregated_params(output.disaggregated_params)
         choice = ChatCompletionResponseChoice(
             index=output.index,
