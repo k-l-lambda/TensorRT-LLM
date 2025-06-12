@@ -553,7 +553,7 @@ __global__ void mtpRelaxedAcceptanceKernel(int const numMTPModules, int const ba
         for (int jj = 0; jj < curAcceptedNum; jj++)
         {
             auto curAcceptedTokenId = curAcceptedTokensPtr[jj];
-            if (curAcceptedTokenId == beginThinkingTokens)
+            if (beginThinkingTokens == 0 || curAcceptedTokenId == beginThinkingTokens)
             {
                 // mtpRelaxedDelta[tid] = relaxedDelta; // Start thinking
                 mtpRelaxedDelta[slotIdx] = relaxedDelta; // Start thinking
