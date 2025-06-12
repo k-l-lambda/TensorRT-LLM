@@ -81,7 +81,12 @@ def get_llm_args(model: str,
     return llm_args, llm_args_extra_dict
 
 
-def launch_server(host: str, port: int, llm_args: dict):
+def launch_server(host: str,
+                  port: int,
+                  llm_args: dict,
+                  tool_parser: str = None,
+                  metadata_server_cfg: Optional[MetadataServerConfig] = None,
+                  server_role: Optional[ServerRole] = None):
 
     backend = llm_args["backend"]
     model = llm_args["model"]
@@ -91,7 +96,11 @@ def launch_server(host: str, port: int, llm_args: dict):
     else:
         llm = LLM(**llm_args)
 
-    server = OpenAIServer(llm=llm, model=model)
+    server = OpenAIServer(llm=llm,
+                          model=model,
+                          tool_parser=tool_parser,
+                          server_role=server_role,
+                          metadata_server_cfg=metadata_server_cfg)
 
     asyncio.run(server(host, port))
 
@@ -183,6 +192,28 @@ def launch_server(host: str, port: int, llm_args: dict):
     default=None,
     help="[Experimental] Specify the parser for reasoning models.",
 )
+@click.option(
+    "--tool_parser",
+    type=click.Choice(["auto", "llama", "deepseek", "hermes", "qwen", "mistral"]),
+    default=None,
+    help="Specify the tool parser to use for function calling. 'auto' will auto-detect based on model output.",
+)
+@click.option("--metadata_server_config_file",
+              type=str,
+              default=None,
+              help="Path to metadata server config file")
+@click.option(
+    "--server_role",
+    type=str,
+    default=None,
+    help="Server role. Specify this value only if running in disaggregated mode."
+)
+@click.option(
+    "--trust_remote_code",
+    type=bool,
+    default=False,
+    help="Whether to trust remote code.",
+)
 def serve(model: str, tokenizer: Optional[str], host: str, port: int,
           log_level: str, backend: str, max_beam_width: int,
           max_batch_size: int, max_num_tokens: int, max_seq_len: int,
@@ -190,8 +221,9 @@ def serve(model: str, tokenizer: Optional[str], host: str, port: int,
           cluster_size: Optional[int], gpus_per_node: Optional[int],
           kv_cache_free_gpu_memory_fraction: float,
           num_postprocess_workers: int, trust_remote_code: bool,
-          extra_llm_api_options: Optional[str],
-          reasoning_parser: Optional[str]):
+          extra_llm_api_options: Optional[str], reasoning_parser: Optional[str],
+          tool_parser: str, metadata_server_config_file: Optional[str],
+          server_role: Optional[str]):
     """Running an OpenAI API compatible server
 
     MODEL: model name | HF checkpoint path | TensorRT engine path
@@ -222,7 +254,17 @@ def serve(model: str, tokenizer: Optional[str], host: str, port: int,
             llm_args_extra_dict = yaml.safe_load(f)
     llm_args = update_llm_args_with_extra_dict(llm_args, llm_args_extra_dict)
 
-    launch_server(host, port, llm_args)
+    metadata_server_cfg = parse_metadata_server_config_file(
+        metadata_server_config_file)
+
+    if metadata_server_cfg is not None:
+        assert server_role is not None, "server_role is required when metadata_server_cfg is provided"
+        try:
+            server_role = ServerRole[server_role.upper()]
+        except ValueError:
+            raise ValueError(f"Invalid server role: {server_role}. " \
+                             f"Must be one of: {', '.join([role.name for role in ServerRole])}")
+    launch_server(host, port, llm_args, tool_parser, metadata_server_cfg, server_role)
 
 
 def get_ctx_gen_server_urls(
