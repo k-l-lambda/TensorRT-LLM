@@ -27,7 +27,7 @@ class ToolCallManager:
         
         Args:
             tokenizer: The tokenizer used by the model
-            tool_parser_name: Name of the tool parser to use (auto, hermes, llama, qwen, mistral)
+            tool_parser_name: Name of the tool parser to use (auto, hermes, llama, qwen, mistral, deepseek)
         """
         self.tokenizer = tokenizer
         self.tool_parser_name = tool_parser_name
@@ -41,7 +41,7 @@ class ToolCallManager:
         """Auto-detect the best parser for the given text format."""
         
         # Try parsers in order of specificity
-        parser_names = ["hermes", "mistral", "qwen", "llama"]
+        parser_names = ["hermes", "mistral", "qwen", "llama", "deepseek"]
         
         for parser_name in parser_names:
             try:

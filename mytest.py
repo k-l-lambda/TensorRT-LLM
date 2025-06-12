@@ -75,44 +75,44 @@ test_cases = [
 
 
 for i, user_message in enumerate(test_cases, 1):
-        payload = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a helpful AI assistant with access to tools."
-                },
-                {
-                    "role": "user",
-                    "content": user_message
-                }
-            ],
-            "tools": tools,
-            "max_tokens": 1024,
-            "temperature": 0.1,
-            "stream": False
-        }
-        
-        response = requests.post(
-            f"{server_url}/v1/chat/completions",
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=60
-        )
-        
-        result = response.json()
-        choice = result["choices"][0]
-        # tool_call = choice["message"]['tool_calls']
-        # print(choice) 
-        tool_call = choice["message"]['tool_calls'][0]['function']
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a helpful AI assistant with access to tools."
+            },
+            {
+                "role": "user",
+                "content": user_message
+            }
+        ],
+        "tools": tools,
+        "max_tokens": 1024,
+        "temperature": 0.1,
+        "stream": False
+    }
+    
+    response = requests.post(
+        f"{server_url}/v1/chat/completions",
+        json=payload,
+        headers={"Content-Type": "application/json"},
+        timeout=60
+    )
+    
+    result = response.json()
+    choice = result["choices"][0]
+    # tool_call = choice["message"]['tool_calls']
+    # print(choice) 
+    tool_call = choice["message"]['tool_calls'][0]['function']
 
-        function_name = tool_call['name']
-        arguments = json.loads(tool_call['arguments'])
-        actual_function = function_map[function_name]
-        result = actual_function(**arguments)
-        
-        print(f"Function called: {tool_call['name']}")
-        print(f"Arguments: {tool_call['arguments']}")
-        print(f"Result: {result}")
-        print("-" * 50)
-        # break
+    function_name = tool_call['name']
+    arguments = json.loads(tool_call['arguments'])
+    actual_function = function_map[function_name]
+    result = actual_function(**arguments)
+    
+    print(f"Function called: {tool_call['name']}")
+    print(f"Arguments: {tool_call['arguments']}")
+    print(f"Result: {result}")
+    print("-" * 50)
+    # break
