@@ -47,7 +47,11 @@ class LlamaToolParser(ToolParser):
         if re.search(r'\[[\w_]+\(', text):
             return True
         
-        # Check for JSON format
+        # Check for OpenAI JSON format
+        if re.search(r'\{"type":\s*"function"', text):
+            return True
+        
+        # Check for simple JSON format
         if text.strip().startswith('{') and '"name"' in text:
             return True
             
@@ -150,47 +154,115 @@ class LlamaToolParser(ToolParser):
         )
     
     def _parse_json_format(self, text: str) -> ExtractedToolCallInformation:
-        """Parse JSON format: {"name": "function_name", "parameters": {...}}"""
+        """Parse JSON format: {"name": "function_name", "parameters": {...}} or OpenAI format"""
         
         # Remove bot token if present
         if self.bot_token in text:
             text = text.replace(self.bot_token, "").strip()
         
+        # Clean up template tokens that might appear
+        template_tokens = ["<|eom_id|>", "<|start_header_id|>", "<|end_header_id|>", "<|python_tag|>"]
+        for token in template_tokens:
+            text = text.replace(token, "")
+        text = text.strip()
+        
+        # Extract JSON from mixed content - handle nested braces
+        json_matches = []
+        
+        # Look for complete JSON objects with proper nesting
+        brace_count = 0
+        start_pos = -1
+        
+        for i, char in enumerate(text):
+            if char == '{':
+                if brace_count == 0:
+                    start_pos = i
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0 and start_pos != -1:
+                    potential_json = text[start_pos:i+1]
+                    # Check if it looks like a tool call
+                    if '"type"' in potential_json or '"name"' in potential_json:
+                        json_matches.append(potential_json)
+                    start_pos = -1
+        
+        # Use the first valid JSON match, or the whole text
+        json_text = json_matches[0] if json_matches else text
+        
         # Try to parse as single JSON object or array
         try:
             # First try parsing as single object
-            if text.strip().startswith('{'):
-                parsed = json.loads(text.strip())
-                if isinstance(parsed, dict) and "name" in parsed:
-                    tool_call = self._create_tool_call(
-                        name=parsed["name"],
-                        arguments=parsed.get("parameters", parsed.get("arguments", {}))
-                    )
+            if json_text.strip().startswith('{'):
+                parsed = json.loads(json_text.strip())
+                if isinstance(parsed, dict):
+                    # Handle OpenAI format: {"type": "function", "name": "...", "parameters": {...}}
+                    if parsed.get("type") == "function" and "name" in parsed:
+                        tool_call = self._create_tool_call(
+                            name=parsed["name"],
+                            arguments=parsed.get("parameters", parsed.get("arguments", {}))
+                        )
+                        
+                        # Clean content by removing the JSON tool call
+                        clean_content = text
+                        if json_matches:
+                            clean_content = text.replace(json_matches[0], "").strip()
+                        
+                        return ExtractedToolCallInformation(
+                            tools_called=True,
+                            tool_calls=[tool_call],
+                            content=clean_content if clean_content else None
+                        )
                     
-                    return ExtractedToolCallInformation(
-                        tools_called=True,
-                        tool_calls=[tool_call],
-                        content=None
-                    )
+                    # Handle simple format: {"name": "function_name", "parameters": {...}}
+                    elif "name" in parsed:
+                        tool_call = self._create_tool_call(
+                            name=parsed["name"],
+                            arguments=parsed.get("parameters", parsed.get("arguments", {}))
+                        )
+                        
+                        # Clean content by removing the JSON tool call
+                        clean_content = text
+                        if json_matches:
+                            clean_content = text.replace(json_matches[0], "").strip()
+                        
+                        return ExtractedToolCallInformation(
+                            tools_called=True,
+                            tool_calls=[tool_call],
+                            content=clean_content if clean_content else None
+                        )
             
             # Try parsing as array
-            elif text.strip().startswith('['):
-                parsed = json.loads(text.strip())
+            elif json_text.strip().startswith('['):
+                parsed = json.loads(json_text.strip())
                 if isinstance(parsed, list):
                     tool_calls = []
                     for item in parsed:
-                        if isinstance(item, dict) and "name" in item:
-                            tool_call = self._create_tool_call(
-                                name=item["name"],
-                                arguments=item.get("parameters", item.get("arguments", {}))
-                            )
-                            tool_calls.append(tool_call)
+                        if isinstance(item, dict):
+                            # Handle both OpenAI format and simple format
+                            if item.get("type") == "function" and "name" in item:
+                                tool_call = self._create_tool_call(
+                                    name=item["name"],
+                                    arguments=item.get("parameters", item.get("arguments", {}))
+                                )
+                                tool_calls.append(tool_call)
+                            elif "name" in item:
+                                tool_call = self._create_tool_call(
+                                    name=item["name"],
+                                    arguments=item.get("parameters", item.get("arguments", {}))
+                                )
+                                tool_calls.append(tool_call)
                     
                     if tool_calls:
+                        # Clean content by removing the JSON tool call
+                        clean_content = text
+                        if json_matches:
+                            clean_content = text.replace(json_matches[0], "").strip()
+                        
                         return ExtractedToolCallInformation(
                             tools_called=True,
                             tool_calls=tool_calls,
-                            content=None
+                            content=clean_content if clean_content else None
                         )
                         
         except (json.JSONDecodeError, ValueError):

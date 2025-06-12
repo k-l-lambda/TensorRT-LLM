@@ -38,6 +38,7 @@ from tensorrt_llm.serve.postprocess_handlers import (
     ChatPostprocArgs, CompletionPostprocArgs, chat_response_post_processor,
     chat_stream_post_processor, completion_response_post_processor,
     completion_stream_post_processor)
+from tensorrt_llm.serve.tool_call_manager import ToolCallManager
 from tensorrt_llm.version import __version__ as VERSION
 
 from .._utils import nvtx_mark
@@ -58,9 +59,13 @@ class OpenAIServer:
         self.metadata_server = create_metadata_server(metadata_server_cfg)
         self.server_role = server_role
         self.binding_addr = None  # Will be set in __call__
+        
+        # Initialize tool call manager
+        self.tool_call_manager = ToolCallManager(self.tokenizer)
         hf_tokenizer_path = llm._hf_model_dir or self.tokenizer.tokenizer.name_or_path
+        trust_remote_code = llm.args.trust_remote_code
         try:
-            self.processor = AutoProcessor.from_pretrained(hf_tokenizer_path)
+            self.processor = AutoProcessor.from_pretrained(hf_tokenizer_path, trust_remote_code=trust_remote_code)
         except Exception:
             logger.debug("Failed to load AutoProcessor or AutoConfig for %s", hf_tokenizer_path)
             self.processor = None
@@ -238,6 +243,24 @@ class OpenAIServer:
             else:
                 post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
                 chat_response = post_processor(promise, args)
+
+            # Process tool calls if tools are available and no tool calls were found
+            if (request.tools and len(request.tools) > 0 and 
+                chat_response.choices and len(chat_response.choices) > 0):
+                
+                for choice in chat_response.choices:
+                    if not choice.message.tool_calls or len(choice.message.tool_calls) == 0:
+                        # Use tool manager to extract tool calls from content
+                        try:
+                            tool_result = self.tool_call_manager.extract_tool_calls(
+                                choice.message.content or "", request
+                            )
+                            if tool_result["tools_called"]:
+                                choice.message.tool_calls = tool_result["tool_calls"]
+                                choice.message.content = tool_result["content"] or ""
+                                logger.info(f"Tool manager extracted {len(tool_result['tool_calls'])} tool calls using {tool_result['parser_used']} parser")
+                        except Exception as e:
+                            logger.warning(f"Tool call extraction failed: {e}")
 
             # Add prompt_tokens_ids to the response
             chat_response.prompt_token_ids = promise.prompt_token_ids
