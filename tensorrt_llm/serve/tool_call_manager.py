@@ -21,17 +21,25 @@ class ToolCallManager:
     tool calls from model outputs.
     """
     
-    def __init__(self, tokenizer, tool_parser_name: str = "auto"):
+    def __init__(self, tokenizer, tool_parser_name: str = None):
         """
         Initialize the tool call manager.
         
         Args:
             tokenizer: The tokenizer used by the model
-            tool_parser_name: Name of the tool parser to use (auto, hermes, llama, qwen, mistral, deepseek)
+            tool_parser_name: Name of the tool parser to use (auto, hermes, llama, qwen, mistral)
+                             If None, tool calling functionality is disabled
         """
         self.tokenizer = tokenizer
         self.tool_parser_name = tool_parser_name
         self.tool_parser = None
+        
+        # If tool_parser_name is None, disable tool calling
+        if tool_parser_name is None:
+            self.enabled = False
+            return
+        
+        self.enabled = True
         
         # Auto-detect parser if not specified
         if tool_parser_name != "auto":
@@ -41,7 +49,7 @@ class ToolCallManager:
         """Auto-detect the best parser for the given text format."""
         
         # Try parsers in order of specificity
-        parser_names = ["hermes", "mistral", "qwen", "llama", "deepseek"]
+        parser_names = ["deepseek_v3", "hermes", "mistral", "qwen", "llama"]
         
         for parser_name in parser_names:
             try:
@@ -72,6 +80,15 @@ class ToolCallManager:
             - tool_calls: List[ToolCall]
             - content: Optional[str]
         """
+        
+        # If tool calling is disabled, return no tool calls
+        if not self.enabled:
+            return {
+                "tools_called": False,
+                "tool_calls": [],
+                "content": model_output,
+                "parser_used": None
+            }
         
         # Auto-detect parser if needed
         if self.tool_parser is None:

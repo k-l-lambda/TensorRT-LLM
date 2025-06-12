@@ -52,6 +52,7 @@ class OpenAIServer:
     def __init__(self,
                  llm: LLM,
                  model: str,
+                 tool_parser: str,
                  server_role: Optional[ServerRole],
                  metadata_server_cfg: MetadataServerConfig):
         self.llm = llm
@@ -59,9 +60,10 @@ class OpenAIServer:
         self.metadata_server = create_metadata_server(metadata_server_cfg)
         self.server_role = server_role
         self.binding_addr = None  # Will be set in __call__
+        self.tool_parser = tool_parser
         
         # Initialize tool call manager
-        self.tool_call_manager = ToolCallManager(self.tokenizer)
+        self.tool_call_manager = ToolCallManager(self.tokenizer, self.tool_parser)
         hf_tokenizer_path = llm._hf_model_dir or self.tokenizer.tokenizer.name_or_path
         trust_remote_code = llm.args.trust_remote_code
         try:
