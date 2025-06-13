@@ -50,11 +50,11 @@ class OpenAIServer:
                  llm: LLM,
                  model: str,
                  tool_parser: str,
-                 server_role: Optional[ServerRole],
-                 metadata_server_cfg: MetadataServerConfig):
+                 server_role: Optional["ServerRole"],
+                 metadata_server_cfg: "MetadataServerConfig"):
         self.llm = llm
         self.tokenizer = llm.tokenizer
-        self.metadata_server = create_metadata_server(metadata_server_cfg)
+        #self.metadata_server = create_metadata_server(metadata_server_cfg)
         self.server_role = server_role
         self.binding_addr = None  # Will be set in __call__
         self.tool_parser = tool_parser

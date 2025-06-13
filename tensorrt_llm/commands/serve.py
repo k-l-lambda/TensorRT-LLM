@@ -85,8 +85,8 @@ def launch_server(host: str,
                   port: int,
                   llm_args: dict,
                   tool_parser: str = None,
-                  metadata_server_cfg: Optional[MetadataServerConfig] = None,
-                  server_role: Optional[ServerRole] = None):
+                  metadata_server_cfg: Optional["MetadataServerConfig"] = None,
+                  server_role: Optional["ServerRole"] = None):
 
     backend = llm_args["backend"]
     model = llm_args["model"]
@@ -254,16 +254,17 @@ def serve(model: str, tokenizer: Optional[str], host: str, port: int,
             llm_args_extra_dict = yaml.safe_load(f)
     llm_args = update_llm_args_with_extra_dict(llm_args, llm_args_extra_dict)
 
-    metadata_server_cfg = parse_metadata_server_config_file(
-        metadata_server_config_file)
+    #metadata_server_cfg = parse_metadata_server_config_file(
+    #    metadata_server_config_file)
+    metadata_server_cfg = None
 
-    if metadata_server_cfg is not None:
-        assert server_role is not None, "server_role is required when metadata_server_cfg is provided"
-        try:
-            server_role = ServerRole[server_role.upper()]
-        except ValueError:
-            raise ValueError(f"Invalid server role: {server_role}. " \
-                             f"Must be one of: {', '.join([role.name for role in ServerRole])}")
+    #if metadata_server_cfg is not None:
+    #    assert server_role is not None, "server_role is required when metadata_server_cfg is provided"
+    #    try:
+    #        server_role = ServerRole[server_role.upper()]
+    #    except ValueError:
+    #        raise ValueError(f"Invalid server role: {server_role}. " \
+    #                         f"Must be one of: {', '.join([role.name for role in ServerRole])}")
     launch_server(host, port, llm_args, tool_parser, metadata_server_cfg, server_role)
 
 
