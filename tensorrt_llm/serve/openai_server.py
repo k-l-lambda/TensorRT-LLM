@@ -205,7 +205,7 @@ class OpenAIServer:
                             logger.warning(f"Tool call extraction failed: {e}")
 
             # Add prompt_tokens_ids to the response
-            chat_response.prompt_token_ids = promise.prompt_token_ids
+            #chat_response.prompt_token_ids = promise.prompt_token_ids
             return chat_response
 
         try:
@@ -255,7 +255,8 @@ class OpenAIServer:
             asyncio.create_task(self.await_disconnected(raw_request, promise))
             if not self.postproc_worker_enabled:
                 postproc_args.tokenizer = self.tokenizer
-                postproc_args.num_prompt_tokens = len(promise.prompt_token_ids)
+                #postproc_args.num_prompt_tokens = len(promise.prompt_token_ids)
+                postproc_args.num_prompt_tokens = 0
 
             if request.stream:
                 response_generator = chat_stream_generator(promise, postproc_params)
@@ -268,7 +269,10 @@ class OpenAIServer:
             # If internal executor error is raised, shutdown the server
             signal.raise_signal(signal.SIGINT)
         except Exception as e:
-            return self.create_error_response(str(e))
+            import traceback
+            error_stack = traceback.format_exc()
+            print('Error stack:\n', error_stack)
+            return self.create_error_response(str(e), stack=error_stack)
 
     async def openai_completion(self, request: CompletionRequest, raw_request: Request) -> Response:
 
@@ -369,7 +373,8 @@ class OpenAIServer:
                 asyncio.create_task(self.await_disconnected(raw_request, promise))
                 if not self.postproc_worker_enabled:
                     postproc_args.tokenizer = self.tokenizer
-                    postproc_args.num_prompt_tokens = len(promise.prompt_token_ids)
+                    #postproc_args.num_prompt_tokens = len(promise.prompt_token_ids)
+                    postproc_args.num_prompt_tokens = 0
                 promises.append(promise)
                 postproc_params_collection.append(None if self.postproc_worker_enabled else postproc_params)
 
