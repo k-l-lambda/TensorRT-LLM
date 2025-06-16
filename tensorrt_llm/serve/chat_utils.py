@@ -278,6 +278,8 @@ def apply_chat_template(
     """Apply chat template to the conversation."""
     hf_chat_template = resolve_hf_chat_template(tokenizer, processor,
                                                 chat_template, tools)
+    if hf_chat_template is None and processor and hasattr(processor, 'chat_template'):
+        hf_chat_template = processor.chat_template
 
     if hf_chat_template is None:
         raise ValueError(
