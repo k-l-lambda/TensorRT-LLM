@@ -3,6 +3,7 @@
 
 import json
 import re
+import logging
 from typing import Any, Dict, List, Optional
 
 from .abstract_tool_parser import (
@@ -12,6 +13,8 @@ from .abstract_tool_parser import (
 )
 from ..openai_protocol import ChatCompletionRequest
 
+logger = logging.getLogger(__name__)
+
 
 @ToolParserManager.register_module(["deepseek", "deepseek_v3", "deepseekv3"])
 class DeepSeekV3ToolParser(ToolParser):
@@ -19,7 +22,7 @@ class DeepSeekV3ToolParser(ToolParser):
     Tool parser for DeepSeek V3 format.
     
     DeepSeek V3 uses a specific format with special tokens:
-    <｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function.function_name
+    <｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>function_name
     ```json
     {"param": "value"}
     ```<｜tool▁call▁end｜><｜tool▁calls▁end｜>
@@ -35,17 +38,21 @@ class DeepSeekV3ToolParser(ToolParser):
         self.tool_call_end_token = "<｜tool▁call▁end｜>"
         self.tool_sep_token = "<｜tool▁sep｜>"
         
-        # Regex patterns for parsing
+        # Fixed regex patterns for parsing
         self.tool_call_regex = re.compile(
-            r"<｜tool▁call▁begin｜>(?P<type>.*?)<｜tool▁sep｜>(?P<function_name>.*?)\n```json\n(?P<function_arguments>.*?)\n```<｜tool▁call▁end｜>",
+            r"<｜tool▁call▁begin｜>(?P<type>function)<｜tool▁sep｜>(?P<function_name>[^\n]+)\n```json\n(?P<function_arguments>.*?)\n```<｜tool▁call▁end｜>",
             re.DOTALL
         )
         
-        # Pattern for incomplete tool calls (streaming)
+        # Pattern for incomplete tool calls (streaming) - fixed
         self.partial_tool_call_regex = re.compile(
-            r"<｜tool▁call▁begin｜>(?P<type>.*?) (?P<function_name>.*?)(?:\n```json\n(?P<function_arguments>.*?))?",
+            r"<｜tool▁call▁begin｜>(?P<type>function)<｜tool▁sep｜>(?P<function_name>[^\n]+)(?:\n```json\n(?P<function_arguments>.*?))?",
             re.DOTALL
         )
+        
+        # Streaming state
+        self.streaming_buffer = ""
+        self.current_tool_calls = []
     
     def can_parse(self, text: str) -> bool:
         """Check if text contains DeepSeek V3 tool call format."""
@@ -86,7 +93,8 @@ class DeepSeekV3ToolParser(ToolParser):
                     )
                     tool_calls.append(tool_call)
                     
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as json_err:
+                    logger.warning(f"Failed to parse JSON arguments for function {function_name}: {json_err}")
                     # If JSON parsing fails, treat as string
                     tool_call = self._create_tool_call(
                         name=function_name.strip(),
@@ -99,7 +107,12 @@ class DeepSeekV3ToolParser(ToolParser):
             if tool_start_idx > 0:
                 content = model_output[:tool_start_idx].strip()
             else:
-                content = ""
+                # Check if there's content after tool calls
+                tool_end_idx = model_output.rfind(self.tool_calls_end_token)
+                if tool_end_idx >= 0:
+                    content = model_output[tool_end_idx + len(self.tool_calls_end_token):].strip()
+                else:
+                    content = ""
             
             # Clean up any remaining tokens from content
             content = self._clean_content(content)
@@ -111,7 +124,7 @@ class DeepSeekV3ToolParser(ToolParser):
             )
             
         except Exception as e:
-            print(f"Error parsing DeepSeek V3 tool calls: {e}")
+            logger.error(f"Error parsing DeepSeek V3 tool calls: {e}", exc_info=True)
             return ExtractedToolCallInformation(
                 tools_called=False,
                 tool_calls=[],
@@ -173,10 +186,13 @@ class DeepSeekV3ToolParser(ToolParser):
     ) -> Optional[Dict[str, Any]]:
         """Extract tool calls from streaming DeepSeek V3 output."""
         
-        # For now, use the non-streaming version on full text
-        # TODO: Implement proper streaming support
-        if self.can_parse(full_text):
-            result = self.extract_tool_calls(full_text, request)
+        # Update streaming buffer
+        self.streaming_buffer += delta_text
+        
+        # Check if we have any complete tool calls
+        if self.tool_calls_end_token in self.streaming_buffer:
+            # We have complete tool calls, parse them
+            result = self.extract_tool_calls(self.streaming_buffer, request)
             if result.tools_called:
                 return {
                     "type": "tool_calls",
@@ -184,9 +200,16 @@ class DeepSeekV3ToolParser(ToolParser):
                     "content": result.content
                 }
         
+        # Check for partial tool calls
+        partial_matches = self.partial_tool_call_regex.findall(self.streaming_buffer)
+        if partial_matches:
+            # We have a partial tool call in progress
+            return {"type": "partial_tool_call", "content": delta_text}
+        
+        # Regular content
         return {"type": "content", "content": delta_text}
     
     def reset_state(self):
         """Reset parser state for new conversations."""
-        # DeepSeek V3 parser doesn't maintain state between calls
-        pass 
+        self.streaming_buffer = ""
+        self.current_tool_calls = []
