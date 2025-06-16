@@ -1885,6 +1885,13 @@ class PyExecutor:
         self.active_requests.clear()
         self._enqueue_responses(error_responses)
 
+        # write an error log
+        if 'CUDA error' in error_msg:
+            with open(os.path.expanduser('~/.cache/trtllm-error.log'), 'a') as log:
+                log.write(datetime.datetime.now().strftime("%m-%d-%Y %H:%M:%S.%f\t"))
+                log.write(error_msg)
+                log.write('\n')
+
     def _terminate_request(self, request: LlmRequest):
         self.resource_manager.free_resources(request)
 

@@ -43,6 +43,9 @@ from .._utils import nvtx_mark
 # yapf: enale
 TIMEOUT_KEEP_ALIVE = 5  # seconds.
 
+import os
+ERROR_LOG_PATH = os.path.expanduser('~/.cache/trtllm-error.log')
+
 
 class OpenAIServer:
 
@@ -91,6 +94,13 @@ class OpenAIServer:
 
         self.register_routes()
 
+        # Delete error log file if it exists
+        if os.path.exists(ERROR_LOG_PATH):
+            try:
+                os.remove(ERROR_LOG_PATH)
+            except Exception as e:
+                pass
+
     async def await_disconnected(self, raw_request: Request, promise):
         while not await raw_request.is_disconnected():
             await asyncio.sleep(1)
@@ -131,6 +141,17 @@ class OpenAIServer:
                                methods=["POST"])
 
     async def health(self) -> Response:
+        # check error log
+        import time
+        if os.path.exists(ERROR_LOG_PATH):
+            mtime = os.path.getmtime(ERROR_LOG_PATH)
+            if time.time() - mtime < 300:
+                with open(ERROR_LOG_PATH, "r") as f:
+                    lines = f.readlines()
+                    last_line = lines[-1].strip() if lines else ""
+                    logger.warning(f'Fatal error from worker detected: {last_line}', )
+                return Response(content=last_line, status_code=500)
+
         return Response(status_code=200)
 
     async def version(self) -> JSONResponse:
