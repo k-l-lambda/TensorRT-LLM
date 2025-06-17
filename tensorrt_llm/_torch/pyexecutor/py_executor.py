@@ -1886,7 +1886,7 @@ class PyExecutor:
         self._enqueue_responses(error_responses)
 
         # write an error log
-        if 'CUDA error' in error_msg:
+        if ('CUDA error' in error_msg) or ('Please set max_seq_len to at least' in error_msg):
             with open(os.path.expanduser('~/.cache/trtllm-error.log'), 'a') as log:
                 log.write(datetime.datetime.now().strftime("%m-%d-%Y %H:%M:%S.%f\t"))
                 log.write(error_msg)
