@@ -293,7 +293,7 @@ class OpenAIServer:
             import traceback
             error_stack = traceback.format_exc()
             print('Error stack:\n', error_stack)
-            return self.create_error_response(str(e), stack=error_stack)
+            return self.create_error_response(str(e))
 
     async def openai_completion(self, request: CompletionRequest, raw_request: Request) -> Response:
 
