@@ -50,6 +50,13 @@ PROFILE_RECORD_GC_ENV_VAR_NAME = "TLLM_PROFILE_RECORD_GC"
 PROFILE_TRACE_ENV_VAR_NAME = "TLLM_TORCH_PROFILE_TRACE"
 
 
+FATAL_ERRORS = [
+	'CUDA error',
+	'CUDA out of memory',
+	'Please set max_seq_len to at least',
+]
+
+
 def _is_executor_request(req_queue_item) -> bool:
     return isinstance(req_queue_item, tuple)
 
@@ -1885,8 +1892,8 @@ class PyExecutor:
         self.active_requests.clear()
         self._enqueue_responses(error_responses)
 
-        # write an error log
-        if ('CUDA error' in error_msg) or ('Please set max_seq_len to at least' in error_msg):
+        # report a fatal error
+        if any(err in error_msg for err in FATAL_ERRORS):
             with open(os.path.expanduser('~/.cache/trtllm-error.log'), 'a') as log:
                 log.write(datetime.datetime.now().strftime("%m-%d-%Y %H:%M:%S.%f\t"))
                 log.write(error_msg)
