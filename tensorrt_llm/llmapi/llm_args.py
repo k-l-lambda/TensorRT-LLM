@@ -243,6 +243,7 @@ class MTPDecodingConfig(DecodingBaseConfig):
     relaxed_delta: Optional[float] = 0.
     BEGIN_THINKING_PHASE_TOKEN: Optional[int] = 128798
     END_THINKING_PHASE_TOKEN: Optional[int] = 128799
+    use_mtp_vanilla: Optional[bool] = False
 
     @classmethod
     def from_dict(cls, data: dict):
@@ -1231,7 +1232,8 @@ class LlmArgs(BaseModel):
                     relaxed_topk=self.speculative_config.relaxed_topk,
                     relaxed_delta=self.speculative_config.relaxed_delta,
                     BEGIN_THINKING_PHASE_TOKEN=self.speculative_config.BEGIN_THINKING_PHASE_TOKEN,
-                    END_THINKING_PHASE_TOKEN=self.speculative_config.END_THINKING_PHASE_TOKEN)
+                    END_THINKING_PHASE_TOKEN=self.speculative_config.END_THINKING_PHASE_TOKEN,
+                    use_mtp_vanilla=self.speculative_config.use_mtp_vanilla)
             else:
                 raise ValueError(
                     f"Speculative config type not recognized: {self.speculative_config}"
