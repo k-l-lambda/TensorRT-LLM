@@ -191,12 +191,20 @@ class OpenAIServer:
                 promise: RequestOutput, postproc_params: PostprocParams) -> AsyncGenerator[str, None]:
             if not self.postproc_worker_enabled:
                 post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
+
+            prompt_tokens_len = len(promise.prompt_token_ids)
+            logger.info(f"chat_stream_generator: {prompt_tokens_len=}")
+            output_tokens_len = 0
+
             async for res in promise:
                 pp_results = res.outputs[0]._postprocess_result if self.postproc_worker_enabled else post_processor(res, args)
                 for pp_res in pp_results:
+                    output_tokens_len += 1
                     yield pp_res
             yield f"data: [DONE]\n\n"
             nvtx_mark("generation ends")
+
+            logger.info(f"tokens lens: {prompt_tokens_len}:{output_tokens_len}")
 
         async def create_chat_response(
                 promise: RequestOutput, postproc_params: PostprocParams) -> ChatCompletionResponse:
