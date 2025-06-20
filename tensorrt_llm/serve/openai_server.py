@@ -167,6 +167,8 @@ class OpenAIServer:
                     content=f"Pending generator timeout, {waiting_time} seconds.",
                     status_code=500
                 )
+            else:
+                logger.info(f"Pending generators: {self.num_pending_generator}, waiting time: {waiting_time} seconds.")
 
         return Response(status_code=200)
 
