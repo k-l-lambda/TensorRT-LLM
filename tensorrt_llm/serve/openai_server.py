@@ -5,6 +5,7 @@ import traceback
 from contextlib import asynccontextmanager
 from http import HTTPStatus
 from pathlib import Path
+import time
 from typing import AsyncGenerator, AsyncIterator, List, Optional, Tuple
 
 import uvicorn
@@ -94,6 +95,9 @@ class OpenAIServer:
 
         self.register_routes()
 
+        self.num_pending_generator = 0
+        self.last_yield_time = time.time()
+
         # Delete error log file if it exists
         if os.path.exists(ERROR_LOG_PATH):
             try:
@@ -142,7 +146,6 @@ class OpenAIServer:
 
     async def health(self) -> Response:
         # check error log
-        import time
         if os.path.exists(ERROR_LOG_PATH):
             mtime = os.path.getmtime(ERROR_LOG_PATH)
             if time.time() - mtime < 300:
@@ -151,6 +154,19 @@ class OpenAIServer:
                     last_line = lines[-1].strip() if lines else ""
                     logger.warning(f'Fatal error from worker detected: {last_line}', )
                 return Response(content=last_line, status_code=500)
+
+        # Check for pending generators and yield timeout
+        waiting_time = 0
+        if self.num_pending_generator > 0:
+            waiting_time = time.time() - self.last_yield_time
+            if waiting_time > 60:
+                logger.warning(
+                    f"Pending generators: {self.num_pending_generator}, waiting timeout: {waiting_time}."
+                )
+                return Response(
+                    content=f"Pending generator timeout, {waiting_time} seconds.",
+                    status_code=500
+                )
 
         return Response(status_code=200)
 
@@ -189,14 +205,17 @@ class OpenAIServer:
 
         async def chat_stream_generator(
                 promise: RequestOutput, postproc_params: PostprocParams) -> AsyncGenerator[str, None]:
+            self.num_pending_generator += 1
             if not self.postproc_worker_enabled:
                 post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
             async for res in promise:
                 pp_results = res.outputs[0]._postprocess_result if self.postproc_worker_enabled else post_processor(res, args)
                 for pp_res in pp_results:
                     yield pp_res
+                    self.last_yield_time = time.time()
             yield f"data: [DONE]\n\n"
             nvtx_mark("generation ends")
+            self.num_pending_generator -= 1
 
         async def create_chat_response(
                 promise: RequestOutput, postproc_params: PostprocParams) -> ChatCompletionResponse:
@@ -324,6 +343,7 @@ class OpenAIServer:
 
         async def create_completion_generator(
                 generator: AsyncIterator[Tuple[RequestOutput, Optional[PostprocParams]]]):
+            self.num_pending_generator += 1
             async for request_output, postproc_params in generator:
                 if not self.postproc_worker_enabled:
                     post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
@@ -332,7 +352,9 @@ class OpenAIServer:
                     pp_result = request_output.outputs[0]._postprocess_result
                 for pp_res in pp_result:
                     yield pp_res
+                    self.last_yield_time = time.time()
             yield f"data: [DONE]\n\n"
+            self.num_pending_generator -= 1
 
         async def create_completion_response(
                 generator: AsyncIterator[Tuple[RequestOutput, Optional[PostprocParams]]]) -> CompletionResponse:
