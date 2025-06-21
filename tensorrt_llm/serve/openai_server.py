@@ -112,6 +112,7 @@ class OpenAIServer:
             promise.abort()
             logger.info(
                 f"{raw_request.client} is disconnected, abort {promise.request_id}")
+            self.num_pending_generator -= 1
 
     @property
     def postproc_worker_enabled(self) -> bool:
