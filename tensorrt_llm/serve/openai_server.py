@@ -158,15 +158,15 @@ class OpenAIServer:
 
         # Check for pending generators and yield timeout
         waiting_time = 0
-        if self.num_pending_generator > 0:
+        if self.num_pending_generator != 0:
             waiting_time = time.time() - self.last_yield_time
-            if waiting_time > 60:
+            if waiting_time > 16:
                 logger.error(
                     f"Critical timeout, pending generators: {self.num_pending_generator}, waiting timeout: {waiting_time}."
                 )
                 time.sleep(1)
                 os._exit(-1)
-            elif waiting_time > 30:
+            elif waiting_time > 1:
                 logger.warning(
                     f"Pending generators: {self.num_pending_generator}, waiting timeout: {waiting_time}."
                 )
