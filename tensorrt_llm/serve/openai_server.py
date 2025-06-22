@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from http import HTTPStatus
 from pathlib import Path
+import time
 from typing import AsyncGenerator, AsyncIterator, List, Optional, Tuple
 
 import uvicorn
@@ -45,6 +46,9 @@ from .._utils import nvtx_mark
 
 # yapf: enale
 TIMEOUT_KEEP_ALIVE = 5  # seconds.
+
+import os
+ERROR_LOG_PATH = os.path.expanduser('~/.cache/trtllm-error.log')
 
 
 class OpenAIServer:
@@ -109,15 +113,24 @@ class OpenAIServer:
 
         self.register_routes()
 
+        self.num_pending_generator = 0
+        self.last_yield_time = time.time()
+
+        # Delete error log file if it exists
+        if os.path.exists(ERROR_LOG_PATH):
+            try:
+                os.remove(ERROR_LOG_PATH)
+            except Exception as e:
+                pass
+
     async def await_disconnected(self, raw_request: Request, promise):
-        if raw_request is None:
-            return
         while not await raw_request.is_disconnected():
             await asyncio.sleep(1)
         if not promise.finished:
             promise.abort()
             logger.info(
                 f"{raw_request.client} is disconnected, abort {promise.request_id}")
+            self.num_pending_generator -= 1
 
     @property
     def postproc_worker_enabled(self) -> bool:
@@ -137,7 +150,6 @@ class OpenAIServer:
 
     def register_routes(self):
         self.app.add_api_route("/health", self.health, methods=["GET"])
-        self.app.add_api_route("/health_generate", self.health_generate, methods=["GET"])
         self.app.add_api_route("/version", self.version, methods=["GET"])
         self.app.add_api_route("/v1/models", self.get_model, methods=["GET"])
         # TODO: the metrics endpoint only reports iteration stats, not the runtime stats for now
@@ -152,6 +164,37 @@ class OpenAIServer:
                                methods=["POST"])
 
     async def health(self) -> Response:
+        # check error log
+        if os.path.exists(ERROR_LOG_PATH):
+            mtime = os.path.getmtime(ERROR_LOG_PATH)
+            if time.time() - mtime < 300:
+                with open(ERROR_LOG_PATH, "r") as f:
+                    lines = f.readlines()
+                    last_line = lines[-1].strip() if lines else ""
+                    logger.warning(f'Fatal error from worker detected: {last_line}', )
+                return Response(content=last_line, status_code=500)
+
+        # Check for pending generators and yield timeout
+        waiting_time = 0
+        if self.num_pending_generator != 0:
+            waiting_time = time.time() - self.last_yield_time
+            if self.num_pending_generator > 2 and waiting_time > 16:
+                logger.error(
+                    f"Critical timeout, pending generators: {self.num_pending_generator}, waiting timeout: {waiting_time}."
+                )
+                time.sleep(1)
+                os._exit(-1)
+            elif self.num_pending_generator > 1 and waiting_time > 1:
+                logger.warning(
+                    f"Pending generators: {self.num_pending_generator}, waiting timeout: {waiting_time}."
+                )
+                return Response(
+                    content=f"Pending generator timeout, {waiting_time} seconds.",
+                    status_code=500
+                )
+            else:
+                logger.info(f"Pending generators: {self.num_pending_generator}, waiting time: {waiting_time} seconds.")
+
         return Response(status_code=200)
 
     async def health_generate(self) -> Response:
@@ -223,20 +266,31 @@ class OpenAIServer:
 
         async def chat_stream_generator(
                 promise: RequestOutput, postproc_params: PostprocParams) -> AsyncGenerator[str, None]:
+            self.num_pending_generator += 1
             if not self.postproc_worker_enabled:
                 post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
+
+            prompt_tokens_len = len(promise.prompt_token_ids)
+            logger.info(f">> {prompt_tokens_len=}")
+            output_tokens_len = 0
+
             async for res in promise:
                 pp_results = res.outputs[0]._postprocess_result if self.postproc_worker_enabled else post_processor(res, args)
                 for pp_res in pp_results:
+                    output_tokens_len += 1
                     yield pp_res
-            yield "data: [DONE]\n\n"
+                    self.last_yield_time = time.time()
+            yield f"data: [DONE]\n\n"
             nvtx_mark("generation ends")
+            self.num_pending_generator -= 1
+
+            logger.info(f"<< {prompt_tokens_len}:{output_tokens_len}")
 
         async def create_chat_response(
-                promise: RequestOutput, postproc_params: PostprocParams, disaggregated_params: Optional[LlmDisaggregatedParams] = None) -> ChatCompletionResponse:
+                promise: RequestOutput, postproc_params: PostprocParams) -> ChatCompletionResponse:
             await promise.aresult()
             if self.postproc_worker_enabled:
-                chat_response =promise.outputs[0]._postprocess_result
+                return promise.outputs[0]._postprocess_result
             else:
                 post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
                 chat_response = post_processor(promise, args)
@@ -247,7 +301,6 @@ class OpenAIServer:
             return chat_response
 
         try:
-            check_multiple_response(request.n, self.llm.args.backend)
             conversation: List[ConversationMessage] = []
             tool_dicts = None if request.tools is None else [
                 tool.model_dump() for tool in request.tools
@@ -312,6 +365,9 @@ class OpenAIServer:
             # If internal executor error is raised, shutdown the server
             signal.raise_signal(signal.SIGINT)
         except Exception as e:
+            import traceback
+            error_stack = traceback.format_exc()
+            print('Error stack:\n', error_stack)
             return self.create_error_response(str(e))
 
     async def openai_completion(self, request: CompletionRequest, raw_request: Request) -> Response:
@@ -343,6 +399,7 @@ class OpenAIServer:
 
         async def create_completion_generator(
                 generator: AsyncIterator[Tuple[RequestOutput, Optional[PostprocParams]]]):
+            self.num_pending_generator += 1
             async for request_output, postproc_params in generator:
                 if not self.postproc_worker_enabled:
                     post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
@@ -351,7 +408,9 @@ class OpenAIServer:
                     pp_result = request_output.outputs[0]._postprocess_result
                 for pp_res in pp_result:
                     yield pp_res
+                    self.last_yield_time = time.time()
             yield "data: [DONE]\n\n"
+            self.num_pending_generator -= 1
 
         async def create_completion_response(
                 generator: AsyncIterator[Tuple[RequestOutput, Optional[PostprocParams]]], disaggregated_params: Optional[LlmDisaggregatedParams] = None) -> CompletionResponse:
@@ -437,6 +496,7 @@ class OpenAIServer:
             # If internal executor error is raised, shutdown the server
             signal.raise_signal(signal.SIGINT)
         except Exception as e:
+            print(f"Encountered an exception: {str(e)}")
             traceback.print_exc()
             return self.create_error_response(str(e))
 
