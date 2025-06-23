@@ -314,8 +314,7 @@ class OpenAIServer:
             asyncio.create_task(self.await_disconnected(raw_request, promise))
             if not self.postproc_worker_enabled:
                 postproc_args.tokenizer = self.tokenizer
-                #postproc_args.num_prompt_tokens = len(promise.prompt_token_ids)
-                postproc_args.num_prompt_tokens = 0
+                postproc_args.num_prompt_tokens = len(promise.prompt_token_ids)
 
             if request.stream:
                 response_generator = chat_stream_generator(promise, postproc_params)
@@ -436,8 +435,7 @@ class OpenAIServer:
                 asyncio.create_task(self.await_disconnected(raw_request, promise))
                 if not self.postproc_worker_enabled:
                     postproc_args.tokenizer = self.tokenizer
-                    #postproc_args.num_prompt_tokens = len(promise.prompt_token_ids)
-                    postproc_args.num_prompt_tokens = 0
+                    postproc_args.num_prompt_tokens = len(promise.prompt_token_ids)
                 promises.append(promise)
                 postproc_params_collection.append(None if self.postproc_worker_enabled else postproc_params)
 
