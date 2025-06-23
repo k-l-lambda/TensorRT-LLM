@@ -113,6 +113,7 @@ class OpenAIServer:
             logger.info(
                 f"{raw_request.client} is disconnected, abort {promise.request_id}")
             self.num_pending_generator -= 1
+            self.num_pending_generator = max(0, self.num_pending_generator)
 
     @property
     def postproc_worker_enabled(self) -> bool:
@@ -160,13 +161,13 @@ class OpenAIServer:
         waiting_time = 0
         if self.num_pending_generator != 0:
             waiting_time = time.time() - self.last_yield_time
-            if waiting_time > 16:
+            if waiting_time > 60:
                 logger.error(
                     f"Critical timeout, pending generators: {self.num_pending_generator}, waiting timeout: {waiting_time}."
                 )
                 time.sleep(1)
                 os._exit(-1)
-            elif waiting_time > 1:
+            elif self.num_pending_generator > 1 and waiting_time > 1:
                 logger.warning(
                     f"Pending generators: {self.num_pending_generator}, waiting timeout: {waiting_time}."
                 )
@@ -364,6 +365,7 @@ class OpenAIServer:
                     self.last_yield_time = time.time()
             yield f"data: [DONE]\n\n"
             self.num_pending_generator -= 1
+            self.num_pending_generator = max(0, self.num_pending_generator)
 
         async def create_completion_response(
                 generator: AsyncIterator[Tuple[RequestOutput, Optional[PostprocParams]]]) -> CompletionResponse:
