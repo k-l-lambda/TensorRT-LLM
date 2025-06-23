@@ -218,14 +218,23 @@ class OpenAIServer:
             self.num_pending_generator += 1
             if not self.postproc_worker_enabled:
                 post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
+
+            prompt_tokens_len = len(promise.prompt_token_ids)
+            logger.info(f">> {prompt_tokens_len=}")
+            output_tokens_len = 0
+
             async for res in promise:
                 pp_results = res.outputs[0]._postprocess_result if self.postproc_worker_enabled else post_processor(res, args)
                 for pp_res in pp_results:
+                    output_tokens_len += 1
                     yield pp_res
                     self.last_yield_time = time.time()
             yield f"data: [DONE]\n\n"
             nvtx_mark("generation ends")
             self.num_pending_generator -= 1
+            self.num_pending_generator = max(0, self.num_pending_generator)
+
+            logger.info(f"<< {prompt_tokens_len}:{output_tokens_len}")
 
         async def create_chat_response(
                 promise: RequestOutput, postproc_params: PostprocParams) -> ChatCompletionResponse:
