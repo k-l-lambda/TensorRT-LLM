@@ -7,6 +7,7 @@ from datetime import datetime
 from http import HTTPStatus
 from pathlib import Path
 from typing import AsyncGenerator, AsyncIterator, List, Optional, Tuple
+import time
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -26,6 +27,8 @@ from tensorrt_llm.logger import logger
 from tensorrt_llm.serve.chat_utils import (check_multiple_response,
                                            parse_chat_messages_coroutines)
 from tensorrt_llm.serve.metadata_server import create_metadata_server
+from tensorrt_llm.serve.metrics import TensorRTMetrics
+from tensorrt_llm.serve.metrics.prometheus_server import PrometheusServer
 from tensorrt_llm.serve.openai_protocol import (ChatCompletionRequest,
                                                 ChatCompletionResponse,
                                                 CompletionRequest,
@@ -54,14 +57,17 @@ class OpenAIServer:
                  model: str,
                  tool_parser: str,
                  server_role: Optional[ServerRole],
-                 metadata_server_cfg: MetadataServerConfig):
+                 metadata_server_cfg: MetadataServerConfig,
+                 prometheus_port: int = 18002):
         self.llm = llm
         self.tokenizer = llm.tokenizer
         self.metadata_server = create_metadata_server(metadata_server_cfg)
         self.server_role = server_role
         self.binding_addr = None  # Will be set in __call__
         self.tool_parser = tool_parser
-        
+        self.metrics = TensorRTMetrics(model_name=model, llm=llm)
+        self.prometheus_server = PrometheusServer(port=prometheus_port)
+
         # Initialize tool call manager
         self.tool_call_manager = ToolCallManager(self.tokenizer, self.tool_parser)
         hf_tokenizer_path = llm._hf_model_dir or self.tokenizer.tokenizer.name_or_path
@@ -218,57 +224,85 @@ class OpenAIServer:
         return JSONResponse(content=events)
 
     async def openai_chat(self, request: ChatCompletionRequest, raw_request: Request) -> Response:
-
-        def get_role() -> str:
-            if request.add_generation_prompt:
-                role = "assistant"
-            else:
-                role = request.messages[-1]["role"]
-            return role
-
-        async def chat_stream_generator(
-                promise: RequestOutput, postproc_params: PostprocParams) -> AsyncGenerator[str, None]:
-            if not self.postproc_worker_enabled:
-                post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
-            async for res in promise:
-                pp_results = res.outputs[0]._postprocess_result if self.postproc_worker_enabled else post_processor(res, args)
-                for pp_res in pp_results:
-                    yield pp_res
-            yield "data: [DONE]\n\n"
-            nvtx_mark("generation ends")
-
-        async def create_chat_response(
-                promise: RequestOutput, postproc_params: PostprocParams) -> ChatCompletionResponse:
-            await promise.aresult()
-            if self.postproc_worker_enabled:
-                chat_response =promise.outputs[0]._postprocess_result
-            else:
-                post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
-                chat_response = post_processor(promise, args)
-
-            # Process tool calls if tools are available and no tool calls were found
-            if (request.tools and len(request.tools) > 0 and 
-                chat_response.choices and len(chat_response.choices) > 0):
-                
-                for choice in chat_response.choices:
-                    if not choice.message.tool_calls or len(choice.message.tool_calls) == 0:
-                        # Use tool manager to extract tool calls from content
-                        try:
-                            tool_result = self.tool_call_manager.extract_tool_calls(
-                                choice.message.content or "", request
-                            )
-                            if tool_result["tools_called"]:
-                                choice.message.tool_calls = tool_result["tool_calls"]
-                                choice.message.content = tool_result["content"] or ""
-                                logger.info(f"Tool manager extracted {len(tool_result['tool_calls'])} tool calls using {tool_result['parser_used']} parser")
-                        except Exception as e:
-                            logger.warning(f"Tool call extraction failed: {e}")
-
-            # Add prompt_tokens_ids to the response
-            chat_response.prompt_token_ids = promise.prompt_token_ids
-            return chat_response
-
+        request_id = f"chatcmpl-{int(time.time() * 1000)}"
         try:
+            prompt_tokens = 0
+            if request.messages and isinstance(request.messages, list):
+                for message in request.messages:
+                    if isinstance(message, dict) and 'content' in message and isinstance(message['content'], str):
+                        prompt_tokens += len(message['content']) // 3
+            self.metrics.track_request_start(request_id, prompt_tokens, request.max_completion_tokens or 1024)
+
+            def get_role() -> str:
+                if request.add_generation_prompt:
+                    role = "assistant"
+                else:
+                    role = request.messages[-1]["role"]
+                return role
+
+            async def chat_stream_generator(promise: RequestOutput, postproc_params: PostprocParams) -> AsyncGenerator[str, None]:
+                if not self.postproc_worker_enabled:
+                    post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
+                
+                self.metrics.track_first_token(request_id)
+                token_count = 0
+                async for res in promise:
+                    pp_results = res.outputs[0]._postprocess_result if self.postproc_worker_enabled else post_processor(res, args)
+                    for pp_res in pp_results:
+                        self.metrics.track_token_generation(request_id, 1)
+                        token_count += 1
+                        yield pp_res
+
+                finish_reason = "stop"
+                if promise.outputs:
+                    finish_reason = promise.outputs[0].finish_reason or "stop"
+                self.metrics.track_request_completion(request_id,
+                                                      prompt_tokens=len(promise.prompt_token_ids),
+                                                      generation_tokens=token_count,
+                                                      finish_reason=finish_reason)
+                yield "data: [DONE]\n\n"
+                nvtx_mark("generation ends")
+
+            async def create_chat_response(
+                    promise: RequestOutput, postproc_params: PostprocParams) -> ChatCompletionResponse:
+                await promise.aresult()
+                if self.postproc_worker_enabled:
+                    chat_response =promise.outputs[0]._postprocess_result
+                else:
+                    post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
+                    chat_response = post_processor(promise, args)
+                
+                chat_response.prompt_token_ids = promise.prompt_token_ids
+                finish_reason = "stop"
+                if chat_response.choices:
+                    finish_reason = chat_response.choices[0].finish_reason or "stop"
+                self.metrics.track_request_completion(request_id,
+                                                      prompt_tokens=chat_response.usage.prompt_tokens,
+                                                      generation_tokens=chat_response.usage.completion_tokens,
+                                                      finish_reason=finish_reason)
+
+                # Process tool calls if tools are available and no tool calls were found
+                if (request.tools and len(request.tools) > 0 and 
+                    chat_response.choices and len(chat_response.choices) > 0):
+                    
+                    for choice in chat_response.choices:
+                        if not choice.message.tool_calls or len(choice.message.tool_calls) == 0:
+                            # Use tool manager to extract tool calls from content
+                            try:
+                                tool_result = self.tool_call_manager.extract_tool_calls(
+                                    choice.message.content or "", request
+                                )
+                                if tool_result["tools_called"]:
+                                    choice.message.tool_calls = tool_result["tool_calls"]
+                                    choice.message.content = tool_result["content"] or ""
+                                    logger.info(f"Tool manager extracted {len(tool_result['tool_calls'])} tool calls using {tool_result['parser_used']} parser")
+                            except Exception as e:
+                                logger.warning(f"Tool call extraction failed: {e}")
+
+                # Add prompt_tokens_ids to the response
+                chat_response.prompt_token_ids = promise.prompt_token_ids
+                return chat_response
+
             check_multiple_response(request.n, self.llm.args.backend)
             conversation: List[ConversationMessage] = []
             tool_dicts = None if request.tools is None else [
@@ -330,84 +364,101 @@ class OpenAIServer:
             else:
                 response = await create_chat_response(promise, postproc_params)
                 return JSONResponse(content=response.model_dump())
-        except CppExecutorError:
+        except CppExecutorError as e:
             # If internal executor error is raised, shutdown the server
+            self.metrics.track_error(request_id, "CppExecutorError")
             signal.raise_signal(signal.SIGINT)
+            raise e
         except Exception as e:
+            self.metrics.track_error(request_id, type(e).__name__)
+            traceback.print_exc()
             return self.create_error_response(str(e))
 
     async def openai_completion(self, request: CompletionRequest, raw_request: Request) -> Response:
-
-        def merge_promises(
-            promises: List[RequestOutput],
-            postproc_params_collections: List[Optional[PostprocParams]]
-        ) -> AsyncIterator[Tuple[RequestOutput, Optional[PostprocParams]]]:
-            outputs = asyncio.Queue()
-            finished = [False] * len(promises)
-
-            async def producer(i: int, promise: RequestOutput, postproc_params: Optional[PostprocParams]):
-                async for output in promise:
-                    await outputs.put((output, postproc_params))
-                finished[i] = True
-
-            _tasks = [
-                asyncio.create_task(producer(i, promise, postproc_params))
-                for i, (promise, postproc_params) in enumerate(zip(promises, postproc_params_collections))
-            ]
-
-            async def consumer():
-                while not all(finished) or not outputs.empty():
-                    item = await outputs.get()
-                    yield item
-                await asyncio.gather(*_tasks)
-
-            return consumer()
-
-        async def create_completion_generator(
-                generator: AsyncIterator[Tuple[RequestOutput, Optional[PostprocParams]]]):
-            async for request_output, postproc_params in generator:
-                if not self.postproc_worker_enabled:
-                    post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
-                    pp_result = post_processor(request_output, args)
-                else:
-                    pp_result = request_output.outputs[0]._postprocess_result
-                for pp_res in pp_result:
-                    yield pp_res
-            yield "data: [DONE]\n\n"
-
-        async def create_completion_response(
-                generator: AsyncIterator[Tuple[RequestOutput, Optional[PostprocParams]]]) -> CompletionResponse:
-            all_choices: List[CompletionResponseChoice] = []
-            all_prompt_token_ids: List[List[int]] = []
-            num_prompt_tokens = num_gen_tokens = 0
-            async for request_output, postproc_params in generator:
-                pp_result: CompletionResponse
-                if not self.postproc_worker_enabled:
-                    post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
-                    pp_result = post_processor(request_output, args)
-                else:
-                    pp_result = request_output.outputs[0]._postprocess_result
-
-                choices, usage = pp_result.choices, pp_result.usage
-                all_choices.extend(choices)
-                num_prompt_tokens += usage.prompt_tokens
-                num_gen_tokens += usage.completion_tokens
-                all_prompt_token_ids.append(request_output.prompt_token_ids)
-
-            usage_info = UsageInfo(
-                prompt_tokens=num_prompt_tokens,
-                completion_tokens=num_gen_tokens,
-                total_tokens=num_gen_tokens + num_prompt_tokens,
-            )
-            response = CompletionResponse(
-                model=self.model,
-                choices=all_choices,
-                usage=usage_info,
-                prompt_token_ids=all_prompt_token_ids,
-            )
-            return response
-
+        request_id = f"cmpl-{int(time.time() * 1000)}"
         try:
+            prompt_tokens = 0
+            if isinstance(request.prompt, str):
+                prompt_tokens = len(request.prompt) // 3
+            elif isinstance(request.prompt, list):
+                prompt_tokens = len(request.prompt)
+            self.metrics.track_request_start(request_id, prompt_tokens, request.max_completion_tokens or 1024)
+
+            def merge_promises(
+                promises: List[RequestOutput],
+                postproc_params_collections: List[Optional[PostprocParams]]
+            ) -> AsyncIterator[Tuple[RequestOutput, Optional[PostprocParams]]]:
+                outputs = asyncio.Queue()
+                finished = [False] * len(promises)
+                async def producer(i: int, promise: RequestOutput, postproc_params: Optional[PostprocParams]):
+                    async for output in promise:
+                        await outputs.put((output, postproc_params))
+                    finished[i] = True
+                _tasks = [
+                    asyncio.create_task(producer(i, promise, postproc_params))
+                    for i, (promise, postproc_params) in enumerate(zip(promises, postproc_params_collections))
+                ]
+                async def consumer():
+                    while not all(finished) or not outputs.empty():
+                        item = await outputs.get()
+                        yield item
+                    await asyncio.gather(*_tasks)
+                return consumer()
+
+            async def create_completion_generator(
+                    generator: AsyncIterator[Tuple[RequestOutput, Optional[PostprocParams]]]):
+                self.metrics.track_first_token(request_id)
+                total_tokens = 0
+                async for request_output, postproc_params in generator:
+                    if not self.postproc_worker_enabled:
+                        post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
+                        pp_result = post_processor(request_output, args)
+                    else:
+                        pp_result = request_output.outputs[0]._postprocess_result
+                    for pp_res in pp_result:
+                        self.metrics.track_token_generation(request_id, 1)
+                        total_tokens += 1
+                        yield pp_res
+                self.metrics.track_request_completion(request_id, generation_tokens=total_tokens, finish_reason="stop")
+                yield "data: [DONE]\n\n"
+
+            async def create_completion_response(
+                    generator: AsyncIterator[Tuple[RequestOutput, Optional[PostprocParams]]]) -> CompletionResponse:
+                all_choices: List[CompletionResponseChoice] = []
+                all_prompt_token_ids: List[List[int]] = []
+                num_prompt_tokens = num_gen_tokens = 0
+                async for request_output, postproc_params in generator:
+                    pp_result: CompletionResponse
+                    if not self.postproc_worker_enabled:
+                        post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
+                        pp_result = post_processor(request_output, args)
+                    else:
+                        pp_result = request_output.outputs[0]._postprocess_result
+                    choices, usage = pp_result.choices, pp_result.usage
+                    all_choices.extend(choices)
+                    num_prompt_tokens += usage.prompt_tokens
+                    num_gen_tokens += usage.completion_tokens
+                    all_prompt_token_ids.append(request_output.prompt_token_ids)
+
+                usage_info = UsageInfo(
+                    prompt_tokens=num_prompt_tokens,
+                    completion_tokens=num_gen_tokens,
+                    total_tokens=num_gen_tokens + num_prompt_tokens
+                )
+                response = CompletionResponse(
+                    model=self.model,
+                    choices=all_choices,
+                    usage=usage_info,
+                    prompt_token_ids=all_prompt_token_ids
+                )
+                self.metrics.track_request_completion(
+                    request_id,
+                    prompt_tokens=num_prompt_tokens,
+                    generation_tokens=num_gen_tokens,
+                    finish_reason="stop"
+                )
+                return response
+
             check_multiple_response(request.n, self.llm.args.backend)
             if isinstance(request.prompt, str) or \
                 (isinstance(request.prompt, list) and isinstance(request.prompt[0], int)):
@@ -453,14 +504,18 @@ class OpenAIServer:
                 response = await create_completion_response(
                     generator)
                 return JSONResponse(content=response.model_dump())
-        except CppExecutorError:
+        except CppExecutorError as e:
             # If internal executor error is raised, shutdown the server
+            self.metrics.track_error(request_id, "CppExecutorError")
             signal.raise_signal(signal.SIGINT)
+            raise e
         except Exception as e:
+            self.metrics.track_error(request_id, type(e).__name__)
             traceback.print_exc()
             return self.create_error_response(str(e))
 
     async def __call__(self, host, port):
+        self.prometheus_server.start()
         # Store the binding address for server registration
         self.binding_addr = f"http://{host}:{port}"
         config = uvicorn.Config(self.app,
