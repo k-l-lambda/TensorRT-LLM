@@ -215,7 +215,6 @@ class OpenAIServer:
 
         async def chat_stream_generator(
                 promise: RequestOutput, postproc_params: PostprocParams) -> AsyncGenerator[str, None]:
-            self.num_pending_generator += 1
             if not self.postproc_worker_enabled:
                 post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
 
@@ -232,7 +231,6 @@ class OpenAIServer:
             yield f"data: [DONE]\n\n"
             nvtx_mark("generation ends")
             self.num_pending_generator -= 1
-            self.num_pending_generator = max(0, self.num_pending_generator)
 
             logger.info(f"<< {prompt_tokens_len}:{output_tokens_len}")
 
@@ -262,6 +260,8 @@ class OpenAIServer:
                                 logger.info(f"Tool manager extracted {len(tool_result['tool_calls'])} tool calls using {tool_result['parser_used']} parser")
                         except Exception as e:
                             logger.warning(f"Tool call extraction failed: {e}")
+
+            self.num_pending_generator -= 1
 
             # Add prompt_tokens_ids to the response
             #chat_response.prompt_token_ids = promise.prompt_token_ids
@@ -311,6 +311,7 @@ class OpenAIServer:
                 streaming=request.stream,
                 disaggregated_params=disaggregated_params
             )
+            self.num_pending_generator += 1
             asyncio.create_task(self.await_disconnected(raw_request, promise))
             if not self.postproc_worker_enabled:
                 postproc_args.tokenizer = self.tokenizer
@@ -326,13 +327,19 @@ class OpenAIServer:
         except CppExecutorError:
             # If internal executor error is raised, shutdown the server
             signal.raise_signal(signal.SIGINT)
+
+            self.num_pending_generator -= 1
         except Exception as e:
             import traceback
             error_stack = traceback.format_exc()
             print('Error stack:\n', error_stack)
+
+            self.num_pending_generator -= 1
             return self.create_error_response(str(e))
 
     async def openai_completion(self, request: CompletionRequest, raw_request: Request) -> Response:
+
+        prompts = []
 
         def merge_promises(
             promises: List[RequestOutput],
@@ -361,7 +368,6 @@ class OpenAIServer:
 
         async def create_completion_generator(
                 generator: AsyncIterator[Tuple[RequestOutput, Optional[PostprocParams]]]):
-            self.num_pending_generator += 1
             async for request_output, postproc_params in generator:
                 if not self.postproc_worker_enabled:
                     post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
@@ -372,8 +378,7 @@ class OpenAIServer:
                     yield pp_res
                     self.last_yield_time = time.time()
             yield f"data: [DONE]\n\n"
-            self.num_pending_generator -= 1
-            self.num_pending_generator = max(0, self.num_pending_generator)
+            self.num_pending_generator -= len(prompts)
 
         async def create_completion_response(
                 generator: AsyncIterator[Tuple[RequestOutput, Optional[PostprocParams]]]) -> CompletionResponse:
@@ -402,6 +407,7 @@ class OpenAIServer:
                 choices=all_choices,
                 usage=usage_info,
             )
+            self.num_pending_generator -= len(prompts)
             return response
 
         try:
@@ -432,6 +438,7 @@ class OpenAIServer:
                     streaming=request.stream,
                     disaggregated_params=disaggregated_params
                 )
+                self.num_pending_generator += 1
                 asyncio.create_task(self.await_disconnected(raw_request, promise))
                 if not self.postproc_worker_enabled:
                     postproc_args.tokenizer = self.tokenizer
@@ -452,9 +459,11 @@ class OpenAIServer:
         except CppExecutorError:
             # If internal executor error is raised, shutdown the server
             signal.raise_signal(signal.SIGINT)
+            self.num_pending_generator -= 1
         except Exception as e:
             print(f"Encountered an exception: {str(e)}")
             traceback.print_exc()
+            self.num_pending_generator -= 1
             return self.create_error_response(str(e))
 
     async def __call__(self, host, port):
