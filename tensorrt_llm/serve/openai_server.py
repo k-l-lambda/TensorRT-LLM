@@ -113,7 +113,6 @@ class OpenAIServer:
             logger.info(
                 f"{raw_request.client} is disconnected, abort {promise.request_id}")
             self.num_pending_generator -= 1
-            self.num_pending_generator = max(0, self.num_pending_generator)
 
     @property
     def postproc_worker_enabled(self) -> bool:
@@ -161,7 +160,7 @@ class OpenAIServer:
         waiting_time = 0
         if self.num_pending_generator != 0:
             waiting_time = time.time() - self.last_yield_time
-            if waiting_time > 60:
+            if waiting_time > 300:
                 logger.error(
                     f"Critical timeout, pending generators: {self.num_pending_generator}, waiting timeout: {waiting_time}."
                 )
@@ -237,6 +236,7 @@ class OpenAIServer:
         async def create_chat_response(
                 promise: RequestOutput, postproc_params: PostprocParams) -> ChatCompletionResponse:
             await promise.aresult()
+            self.last_yield_time = time.time()
             if self.postproc_worker_enabled:
                 return promise.outputs[0]._postprocess_result
             else:
@@ -396,6 +396,7 @@ class OpenAIServer:
                 all_choices.extend(choices)
                 num_prompt_tokens += usage.prompt_tokens
                 num_gen_tokens += usage.completion_tokens
+                self.last_yield_time = time.time()
 
             usage_info = UsageInfo(
                 prompt_tokens=num_prompt_tokens,
@@ -459,11 +460,11 @@ class OpenAIServer:
         except CppExecutorError:
             # If internal executor error is raised, shutdown the server
             signal.raise_signal(signal.SIGINT)
-            self.num_pending_generator -= 1
+            self.num_pending_generator -= len(prompts)
         except Exception as e:
             print(f"Encountered an exception: {str(e)}")
             traceback.print_exc()
-            self.num_pending_generator -= 1
+            self.num_pending_generator -= len(prompts)
             return self.create_error_response(str(e))
 
     async def __call__(self, host, port):
