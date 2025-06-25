@@ -97,6 +97,7 @@ class OpenAIServer:
 
         self.num_pending_generator = 0
         self.last_yield_time = time.time()
+        self.last_request_time = self.last_yield_time
 
         # Delete error log file if it exists
         if os.path.exists(ERROR_LOG_PATH):
@@ -160,22 +161,23 @@ class OpenAIServer:
         waiting_time = 0
         if self.num_pending_generator != 0:
             waiting_time = time.time() - self.last_yield_time
-            if waiting_time > 300:
+            request_post_time = self.last_request_time - self.last_yield_time
+            if request_post_time > 1 and self.num_pending_generator > 1 and waiting_time > 300:
                 logger.error(
-                    f"Critical timeout, pending generators: {self.num_pending_generator}, waiting timeout: {waiting_time}."
+                    f"Critical timeout, pending generators: {self.num_pending_generator}, waiting timeout: {waiting_time:.4f}, {request_post_time:.4f}."
                 )
                 time.sleep(1)
                 os._exit(-1)
-            elif self.num_pending_generator > 1 and waiting_time > 1:
+            elif request_post_time > 1 and self.num_pending_generator > 1 and waiting_time > 1:
                 logger.warning(
-                    f"Pending generators: {self.num_pending_generator}, waiting timeout: {waiting_time}."
+                    f"Pending generators: {self.num_pending_generator}, waiting timeout: {waiting_time:.4f}, {request_post_time:.4f}."
                 )
                 return Response(
                     content=f"Pending generator timeout, {waiting_time} seconds.",
                     status_code=500
                 )
             else:
-                logger.info(f"Pending generators: {self.num_pending_generator}, waiting time: {waiting_time} seconds.")
+                logger.info(f"Pending generators: {self.num_pending_generator}, waiting time: {waiting_time:.4f}s. ({request_post_time:.4f}s)")
 
         return Response(status_code=200)
 
@@ -312,6 +314,7 @@ class OpenAIServer:
                 disaggregated_params=disaggregated_params
             )
             self.num_pending_generator += 1
+            self.last_request_time = time.time()
             asyncio.create_task(self.await_disconnected(raw_request, promise))
             if not self.postproc_worker_enabled:
                 postproc_args.tokenizer = self.tokenizer
@@ -446,6 +449,7 @@ class OpenAIServer:
                     postproc_args.num_prompt_tokens = len(promise.prompt_token_ids)
                 promises.append(promise)
                 postproc_params_collection.append(None if self.postproc_worker_enabled else postproc_params)
+            self.last_request_time = time.time()
 
             generator = merge_promises(promises, postproc_params_collection)
             if request.stream:
