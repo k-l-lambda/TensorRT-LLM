@@ -155,6 +155,8 @@ class OpenAIServer:
                     lines = f.readlines()
                     last_line = lines[-1].strip() if lines else ""
                     logger.error(f'Fatal error from worker detected: {last_line}', )
+                    time.sleep(1)
+                    os._exit(-1)
                 return Response(content=last_line, status_code=500)
 
         # Check for pending generators and yield timeout
