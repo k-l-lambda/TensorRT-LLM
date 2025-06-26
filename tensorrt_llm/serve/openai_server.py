@@ -150,11 +150,11 @@ class OpenAIServer:
         # check error log
         if os.path.exists(ERROR_LOG_PATH):
             mtime = os.path.getmtime(ERROR_LOG_PATH)
-            if time.time() - mtime < 300:
+            if time.time() - mtime < 1800:
                 with open(ERROR_LOG_PATH, "r") as f:
                     lines = f.readlines()
                     last_line = lines[-1].strip() if lines else ""
-                    logger.warning(f'Fatal error from worker detected: {last_line}', )
+                    logger.error(f'Fatal error from worker detected: {last_line}', )
                 return Response(content=last_line, status_code=500)
 
         # Check for pending generators and yield timeout
