@@ -46,17 +46,18 @@ class TensorRTMetrics:
         self._active_requests = 0
         self._request_start_times = {}
     
-    def track_request_start(self, request_id: str, prompt_tokens: int = 0, max_tokens: int = 100):
+    def track_request_start(self, request_id: str, max_tokens: int = 100):
         """Track request start"""
-        self._active_requests += 1
+        if not request_id in self._request_start_times:
+            self._active_requests += 1
         self._request_start_times[request_id] = time.time()
-        
+
         # Update Metrics class indicators
         self.metrics.gauge_scheduler_running.labels(model=self.model_name).set(self._active_requests)
         
         # Track request in engine collector if available
         if self.engine_collector:
-            self.engine_collector.track_request_start(request_id, prompt_tokens, max_tokens)
+            self.engine_collector.track_request_start(request_id, max_tokens)
         
         logger.debug(f"Request {request_id} started, active requests: {self._active_requests}")
     
@@ -65,10 +66,10 @@ class TensorRTMetrics:
         if request_id in self._request_start_times:
             latency = time.time() - self._request_start_times[request_id]
             del self._request_start_times[request_id]
+
+            self._active_requests = max(0, self._active_requests - 1)
         else:
             latency = 0.0
-        
-        self._active_requests = max(0, self._active_requests - 1)
         
         # Update Metrics class indicators
         self.metrics.gauge_scheduler_running.labels(model=self.model_name).set(self._active_requests)
@@ -95,7 +96,7 @@ class TensorRTMetrics:
     def track_token_generation(self, request_id: str, num_tokens: int):
         """Track token generation"""
         if num_tokens > 0:
-            self.metrics.counter_generation_tokens.labels(model=self.model_name).inc(num_tokens)
+            # self.metrics.counter_generation_tokens.labels(model=self.model_name).inc(num_tokens)
             self.metrics.histogram_num_generation_tokens_request.labels(model=self.model_name).observe(num_tokens)
         
         # Track token generation in engine collector if available
