@@ -38,6 +38,8 @@ from tensorrt_llm.serve.postprocess_handlers import (
     completion_stream_post_processor)
 from tensorrt_llm.serve.tool_call_manager import ToolCallManager
 from tensorrt_llm.version import __version__ as VERSION
+from tensorrt_llm.serve.metrics import TensorRTMetrics
+from tensorrt_llm.serve.metrics.prometheus_server import PrometheusServer
 
 from .._utils import nvtx_mark
 
@@ -55,14 +57,17 @@ class OpenAIServer:
                  model: str,
                  tool_parser: str,
                  server_role: Optional["ServerRole"],
-                 metadata_server_cfg: "MetadataServerConfig"):
+                 metadata_server_cfg: "MetadataServerConfig",
+                 prometheus_port: int = None):
         self.llm = llm
         self.tokenizer = llm.tokenizer
         #self.metadata_server = create_metadata_server(metadata_server_cfg)
         self.server_role = server_role
         self.binding_addr = None  # Will be set in __call__
         self.tool_parser = tool_parser
-        
+        self.metrics = TensorRTMetrics(model_name=model, llm=llm)
+        self.prometheus_server = PrometheusServer(port=prometheus_port) if prometheus_port else None
+
         # Initialize tool call manager
         self.tool_call_manager = ToolCallManager(self.tokenizer, self.tool_parser)
         hf_tokenizer_path = llm._hf_model_dir or self.tokenizer.tokenizer.name_or_path
@@ -95,7 +100,6 @@ class OpenAIServer:
 
         self.register_routes()
 
-        self.num_pending_generator = 0
         self.last_yield_time = time.time()
         self.last_request_time = self.last_yield_time
 
@@ -113,7 +117,7 @@ class OpenAIServer:
             promise.abort()
             logger.info(
                 f"{raw_request.client} is disconnected, abort {promise.request_id}")
-            self.num_pending_generator -= 1
+            self.metrics.track_request_completion(promise.request_id, finish_reason="disconnected")
 
     @property
     def postproc_worker_enabled(self) -> bool:
@@ -159,27 +163,28 @@ class OpenAIServer:
                     os._exit(-1)
                 return Response(content=last_line, status_code=500)
 
-        # Check for pending generators and yield timeout
+        # Check for pending requests and yield timeout
         waiting_time = 0
-        if self.num_pending_generator != 0:
+        active_requests = self.metrics._active_requests
+        if active_requests > 0:
             waiting_time = time.time() - self.last_yield_time
             request_post_time = self.last_request_time - self.last_yield_time
-            if request_post_time > 1 and self.num_pending_generator > 1 and waiting_time > 300:
+            if request_post_time > 1 and active_requests > 1 and waiting_time > 300:
                 logger.error(
-                    f"Critical timeout, pending generators: {self.num_pending_generator}, waiting timeout: {waiting_time:.4f}, {request_post_time:.4f}."
+                    f"Critical timeout, pending generators: {active_requests}, waiting timeout: {waiting_time:.4f}, {request_post_time:.4f}."
                 )
                 time.sleep(1)
                 os._exit(-1)
-            elif request_post_time > 1 and self.num_pending_generator > 1 and waiting_time > 1:
+            elif request_post_time > 1 and active_requests > 1 and waiting_time > 1:
                 logger.warning(
-                    f"Pending generators: {self.num_pending_generator}, waiting timeout: {waiting_time:.4f}, {request_post_time:.4f}."
+                    f"Pending generators: {active_requests}, waiting timeout: {waiting_time:.4f}, {request_post_time:.4f}."
                 )
                 return Response(
-                    content=f"Pending generator timeout, {waiting_time} seconds.",
-                    status_code=500
+                    content=f"Pending request timeout, {waiting_time} seconds.",
+                    status_code=500,
                 )
             else:
-                logger.info(f"Pending generators: {self.num_pending_generator}, waiting time: {waiting_time:.4f}s. ({request_post_time:.4f}s)")
+                logger.info(f"Pending requests: {active_requests}, waiting time: {waiting_time:.4f}s, ({request_post_time:.4f}s)")
 
         return Response(status_code=200)
 
@@ -223,19 +228,29 @@ class OpenAIServer:
 
             prompt_tokens_len = len(promise.prompt_token_ids)
             logger.info(f">> {prompt_tokens_len=}")
-            output_tokens_len = 0
+
+            self.metrics.track_first_token(request_id)
 
             async for res in promise:
                 pp_results = res.outputs[0]._postprocess_result if self.postproc_worker_enabled else post_processor(res, args)
                 for pp_res in pp_results:
-                    output_tokens_len += 1
+                    self.metrics.track_token_generation(request_id, len(promise.outputs[0].token_ids))
                     yield pp_res
                     self.last_yield_time = time.time()
+            token_count = len(promise.outputs[0].token_ids)
+
+            finish_reason = "stop"
+            if promise.outputs:
+                finish_reason = promise.outputs[0].finish_reason or "stop"
+            self.metrics.track_request_completion(request_id,
+                                                  prompt_tokens=len(promise.prompt_token_ids),
+                                                  generation_tokens=token_count,
+                                                  finish_reason=finish_reason)
+
             yield f"data: [DONE]\n\n"
             nvtx_mark("generation ends")
-            self.num_pending_generator -= 1
 
-            logger.info(f"<< {prompt_tokens_len}:{output_tokens_len}")
+            logger.info(f"<< {prompt_tokens_len}:{token_count}")
 
         async def create_chat_response(
                 promise: RequestOutput, postproc_params: PostprocParams) -> ChatCompletionResponse:
@@ -246,6 +261,15 @@ class OpenAIServer:
             else:
                 post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
                 chat_response = post_processor(promise, args)
+
+            chat_response.prompt_token_ids = promise.prompt_token_ids
+            finish_reason = "stop"
+            if chat_response.choices:
+                finish_reason = chat_response.choices[0].finish_reason or "stop"
+            self.metrics.track_request_completion(request_id,
+                                                  prompt_tokens=chat_response.usage.prompt_tokens,
+                                                  generation_tokens=chat_response.usage.completion_tokens,
+                                                  finish_reason=finish_reason)
 
             # Process tool calls if tools are available and no tool calls were found
             if (request.tools and len(request.tools) > 0 and 
@@ -264,8 +288,6 @@ class OpenAIServer:
                                 logger.info(f"Tool manager extracted {len(tool_result['tool_calls'])} tool calls using {tool_result['parser_used']} parser")
                         except Exception as e:
                             logger.warning(f"Tool call extraction failed: {e}")
-
-            self.num_pending_generator -= 1
 
             # Add prompt_tokens_ids to the response
             #chat_response.prompt_token_ids = promise.prompt_token_ids
@@ -315,8 +337,10 @@ class OpenAIServer:
                 streaming=request.stream,
                 disaggregated_params=disaggregated_params
             )
-            self.num_pending_generator += 1
+
             self.last_request_time = time.time()
+            request_id = promise.request_id
+            self.metrics.track_request_start(promise.request_id, request.max_completion_tokens)
             asyncio.create_task(self.await_disconnected(raw_request, promise))
             if not self.postproc_worker_enabled:
                 postproc_args.tokenizer = self.tokenizer
@@ -329,17 +353,14 @@ class OpenAIServer:
             else:
                 response = await create_chat_response(promise, postproc_params)
                 return JSONResponse(content=response.model_dump())
-        except CppExecutorError:
+        except CppExecutorError as e:
             # If internal executor error is raised, shutdown the server
+            self.metrics.track_error(request_id, "CppExecutorError")
             signal.raise_signal(signal.SIGINT)
-
-            self.num_pending_generator -= 1
+            raise e
         except Exception as e:
-            import traceback
-            error_stack = traceback.format_exc()
-            print('Error stack:\n', error_stack)
-
-            self.num_pending_generator -= 1
+            self.metrics.track_error(request_id, type(e).__name__)
+            traceback.print_exc()
             return self.create_error_response(str(e))
 
     async def openai_completion(self, request: CompletionRequest, raw_request: Request) -> Response:
@@ -371,9 +392,14 @@ class OpenAIServer:
 
             return consumer()
 
+        generate_length_recorder = {}
+        prompt_length_recorder = {}
         async def create_completion_generator(
                 generator: AsyncIterator[Tuple[RequestOutput, Optional[PostprocParams]]]):
             async for request_output, postproc_params in generator:
+                rid = request_output.request_id
+                prompt_length_recorder[rid] = len(request_output.prompt_token_ids)
+                generate_length_recorder[rid] = len(request_output.outputs[0].token_ids)
                 if not self.postproc_worker_enabled:
                     post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
                     pp_result = post_processor(request_output, args)
@@ -382,9 +408,10 @@ class OpenAIServer:
                 for pp_res in pp_result:
                     yield pp_res
                     self.last_yield_time = time.time()
-            yield f"data: [DONE]\n\n"
-            self.num_pending_generator -= len(prompts)
 
+            for rid in generate_length_recorder.keys():
+               self.metrics.track_request_completion(rid, prompt_tokens=prompt_length_recorder[rid], generation_tokens=generate_length_recorder[rid], finish_reason="stop")
+            yield f"data: [DONE]\n\n"
         async def create_completion_response(
                 generator: AsyncIterator[Tuple[RequestOutput, Optional[PostprocParams]]]) -> CompletionResponse:
             all_choices: List[CompletionResponseChoice] = []
@@ -396,6 +423,10 @@ class OpenAIServer:
                     pp_result = post_processor(request_output, args)
                 else:
                     pp_result = request_output.outputs[0]._postprocess_result
+
+                rid = request_output.request_id
+                prompt_length_recorder[rid] = len(request_output.prompt_token_ids)
+                generate_length_recorder[rid] = len(request_output.outputs[0].token_ids)
 
                 choices, usage = pp_result.choices, pp_result.usage
                 all_choices.extend(choices)
@@ -413,7 +444,14 @@ class OpenAIServer:
                 choices=all_choices,
                 usage=usage_info,
             )
-            self.num_pending_generator -= len(prompts)
+
+            for rid in generate_length_recorder.keys():
+               self.metrics.track_request_completion(
+                   rid,
+                   prompt_tokens=prompt_length_recorder[rid],
+                   generation_tokens=generate_length_recorder[rid],
+                   finish_reason="stop",
+               )
             return response
 
         try:
@@ -444,7 +482,9 @@ class OpenAIServer:
                     streaming=request.stream,
                     disaggregated_params=disaggregated_params
                 )
-                self.num_pending_generator += 1
+                # print(f"Request ID: {promise.request_id}, Prompt: {prompt}")
+
+                self.metrics.track_request_start(promise.request_id, request.max_tokens)
                 asyncio.create_task(self.await_disconnected(raw_request, promise))
                 if not self.postproc_worker_enabled:
                     postproc_args.tokenizer = self.tokenizer
@@ -463,17 +503,22 @@ class OpenAIServer:
                 response = await create_completion_response(
                     generator)
                 return JSONResponse(content=response.model_dump())
-        except CppExecutorError:
+        except CppExecutorError as e:
             # If internal executor error is raised, shutdown the server
+            for request_id in generate_length_recorder.keys():
+                self.metrics.track_error(request_id, "CppExecutorError")
             signal.raise_signal(signal.SIGINT)
-            self.num_pending_generator -= len(prompts)
+            raise e
         except Exception as e:
-            print(f"Encountered an exception: {str(e)}")
+            for request_id in generate_length_recorder.keys():
+                self.metrics.track_error(request_id, type(e).__name__)
             traceback.print_exc()
-            self.num_pending_generator -= len(prompts)
             return self.create_error_response(str(e))
 
     async def __call__(self, host, port):
+        if self.prometheus_server is not None:
+            self.prometheus_server.start()
+
         config = uvicorn.Config(self.app,
                                 host=host,
                                 port=port,
