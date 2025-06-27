@@ -190,10 +190,11 @@ class EngineMetricsCollector:
         """Track when the first token is generated."""
         if request_id in self._request_timestamps:
             now = time.time()
-            self._request_start_times[request_id] = now
-            if request_id in self._request_metrics:
-                self._request_metrics[request_id]['first_token_time'] = now
-    
+            if request_id not in self._request_start_times:
+                self._request_start_times[request_id] = now
+                if request_id in self._request_metrics:
+                    self._request_metrics[request_id]['first_token_time'] = now
+
     def track_token_generation(self, request_id: str, num_tokens: int):
         """Track token generation."""
         if request_id in self._request_metrics:

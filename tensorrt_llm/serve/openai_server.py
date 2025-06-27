@@ -397,6 +397,7 @@ class OpenAIServer:
                 generator: AsyncIterator[Tuple[RequestOutput, Optional[PostprocParams]]]):
             async for request_output, postproc_params in generator:
                 rid = request_output.request_id
+                self.metrics.track_first_token(rid)
                 prompt_length_recorder[rid] = len(request_output.prompt_token_ids)
                 generate_length_recorder[rid] = len(request_output.outputs[0].token_ids)
                 if not self.postproc_worker_enabled:
