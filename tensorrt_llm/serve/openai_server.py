@@ -262,7 +262,6 @@ class OpenAIServer:
                 post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
                 chat_response = post_processor(promise, args)
 
-            chat_response.prompt_token_ids = promise.prompt_token_ids
             finish_reason = "stop"
             if chat_response.choices:
                 finish_reason = chat_response.choices[0].finish_reason or "stop"
