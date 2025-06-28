@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from http import HTTPStatus
 from pathlib import Path
 import time
-from typing import AsyncGenerator, AsyncIterator, List, Optional, Tuple
+from typing import AsyncGenerator, AsyncIterator, List, Optional, Tuple, Callable
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -53,25 +53,26 @@ ERROR_LOG_PATH = os.path.expanduser('~/.cache/trtllm-error.log')
 class OpenAIServer:
 
     def __init__(self,
-                 llm: LLM,
+                 llm_factory: Callable[[], LLM],
                  model: str,
                  tool_parser: str,
                  server_role: Optional["ServerRole"],
                  metadata_server_cfg: "MetadataServerConfig",
                  prometheus_port: int = None):
-        self.llm = llm
-        self.tokenizer = llm.tokenizer
+        self.llm_factory = llm_factory
+        self.llm = llm_factory()
+        self.tokenizer = self.llm.tokenizer
         #self.metadata_server = create_metadata_server(metadata_server_cfg)
         self.server_role = server_role
         self.binding_addr = None  # Will be set in __call__
         self.tool_parser = tool_parser
-        self.metrics = TensorRTMetrics(model_name=model, llm=llm)
+        self.metrics = TensorRTMetrics(model_name=model, get_executor=lambda: self.llm._executor if hasattr(self.llm, '_executor') else None)
         self.prometheus_server = PrometheusServer(port=prometheus_port) if prometheus_port else None
 
         # Initialize tool call manager
         self.tool_call_manager = ToolCallManager(self.tokenizer, self.tool_parser)
-        hf_tokenizer_path = llm._hf_model_dir or self.tokenizer.tokenizer.name_or_path
-        trust_remote_code = llm.args.trust_remote_code
+        hf_tokenizer_path = self.llm._hf_model_dir or self.tokenizer.tokenizer.name_or_path
+        trust_remote_code = self.llm.args.trust_remote_code
         try:
             self.processor = AutoProcessor.from_pretrained(hf_tokenizer_path, trust_remote_code=trust_remote_code)
             self.model_config = AutoConfig.from_pretrained(hf_tokenizer_path)
@@ -150,6 +151,20 @@ class OpenAIServer:
                                self.openai_chat,
                                methods=["POST"])
 
+    def restart_llm (self):
+        logger.info("Shutting down LLM instance...")
+        self.llm.shutdown()
+        time.sleep(1)
+
+        try:
+            os.remove(ERROR_LOG_PATH)
+        except Exception as e:
+            pass
+
+        logger.info("\n--------------------------")
+        logger.info("Restarting LLM instance...")
+        self.llm = self.llm_factory()
+
     async def health(self) -> Response:
         # check error log
         if os.path.exists(ERROR_LOG_PATH):
@@ -159,8 +174,11 @@ class OpenAIServer:
                     lines = f.readlines()
                     last_line = lines[-1].strip() if lines else ""
                     logger.error(f'Fatal error from worker detected: {last_line}', )
-                    time.sleep(1)
-                    os._exit(-1)
+                    #time.sleep(1)
+                    #os._exit(-1)
+                    self.restart_llm()
+
+                # TODO
                 return Response(content=last_line, status_code=500)
 
         # Check for pending requests and yield timeout
