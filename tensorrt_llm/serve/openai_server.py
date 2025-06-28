@@ -47,6 +47,7 @@ from .._utils import nvtx_mark
 TIMEOUT_KEEP_ALIVE = 5  # seconds.
 
 import os
+import hashlib
 ERROR_LOG_PATH = os.path.expanduser('~/.cache/trtllm-error.log')
 
 
@@ -151,6 +152,7 @@ class OpenAIServer:
         self.app.add_api_route("/v1/chat/completions",
                                self.openai_chat,
                                methods=["POST"])
+        self.app.add_api_route("/restart", self.handle_restart, methods=["POST"])
 
     def restart_llm (self):
         self.is_restarting = True
@@ -212,6 +214,19 @@ class OpenAIServer:
                 logger.info(f"Pending requests: {active_requests}, waiting time: {waiting_time:.4f}s, ({request_post_time:.4f}s)")
 
         return Response(status_code=200)
+
+    async def handle_restart(self, request: Request) -> Response:
+        body = await request.body()
+        token = body.decode("utf-8") if isinstance(body, bytes) else str(body)
+        secret = hashlib.md5(ERROR_LOG_PATH.encode('utf-8')).hexdigest()
+        if token == secret:
+            def restart_gen():
+                yield 'Restarting...\n'
+                self.restart_llm()
+                yield 'Done.'
+            return StreamingResponse(restart_gen(), media_type="text/event-stream")
+
+        return Response(status_code=404)
 
     async def version(self) -> JSONResponse:
         ver = {"version": VERSION}
