@@ -92,12 +92,12 @@ def launch_server(host: str,
     backend = llm_args["backend"]
     model = llm_args["model"]
 
-    if backend == 'pytorch':
-        llm = PyTorchLLM(**llm_args)
-    else:
-        llm = LLM(**llm_args)
+    def create_llm () -> LLM:
+        if backend == 'pytorch':
+            return PyTorchLLM(**llm_args)
+        return LLM(**llm_args)
 
-    server = OpenAIServer(llm=llm,
+    server = OpenAIServer(llm_factory=create_llm,
                           model=model,
                           tool_parser=tool_parser,
                           server_role=server_role,

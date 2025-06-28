@@ -4,7 +4,7 @@
 import time
 import psutil
 import torch
-from typing import Optional
+from typing import Optional, Callable, Any
 
 from tensorrt_llm.logger import logger
 from tensorrt_llm.serve.metrics.metrics import Metrics, Stats, PrometheusStatLogger
@@ -20,13 +20,12 @@ class TensorRTMetrics:
     Removes redundancy from MetricsMiddleware and provides a cleaner interface.
     """
 
-    def __init__(self, model_name: str, llm=None):
+    def __init__(self, model_name: str, get_executor: Callable[[], Any]):
         self.model_name = model_name
-        self.llm = llm
 
         # Initialize engine metrics collector
-        if llm:
-            self.engine_collector = EngineMetricsCollector(llm)
+        if get_executor:
+            self.engine_collector = EngineMetricsCollector(get_executor)
         else:
             self.engine_collector = None
             logger.warning("No LLM instance provided, engine metrics collection disabled")
@@ -121,6 +120,10 @@ class TensorRTMetrics:
             del self._request_start_times[request_id]
             self._active_requests = max(0, self._active_requests - 1)
             self.metrics.gauge_scheduler_running.labels(model=self.model_name).set(self._active_requests)
+
+    def cleanup_tracks(self):
+        self._active_requests = 0
+        self._request_start_times = {}
 
     def update_system_metrics(self):
         """Update system metrics"""

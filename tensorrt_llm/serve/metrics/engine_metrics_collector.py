@@ -7,6 +7,7 @@ import torch
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 from collections import defaultdict
+from typing import Callable
 
 from tensorrt_llm.logger import logger
 from tensorrt_llm.serve.metrics.metrics import Stats, SpecDecodeMetrics
@@ -52,8 +53,8 @@ class EngineStats:
 class EngineMetricsCollector:
     """Collects metrics directly from TensorRT-LLM engine components."""
     
-    def __init__(self, llm):
-        self.llm = llm
+    def __init__(self, get_executor: Callable[[], Any]):
+        self.get_executor = get_executor
         self._request_timestamps = {}  # request_id -> arrival_time
         self._request_start_times = {}  # request_id -> first_token_time
         self._request_metrics = {}  # request_id -> metrics
@@ -64,8 +65,8 @@ class EngineMetricsCollector:
         """Get statistics from the executor."""
         try:
             # Try to access executor stats if available
-            if hasattr(self.llm, '_executor') and self.llm._executor:
-                executor = self.llm._executor
+            if self.get_executor:
+                executor = self.get_executor()
                 
                 # Get basic stats from executor
                 stats = {

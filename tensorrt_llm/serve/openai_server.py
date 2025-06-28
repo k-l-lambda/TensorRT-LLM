@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from http import HTTPStatus
 from pathlib import Path
 import time
-from typing import AsyncGenerator, AsyncIterator, List, Optional, Tuple
+from typing import AsyncGenerator, AsyncIterator, List, Optional, Tuple, Callable
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -47,31 +47,34 @@ from .._utils import nvtx_mark
 TIMEOUT_KEEP_ALIVE = 5  # seconds.
 
 import os
+import hashlib
 ERROR_LOG_PATH = os.path.expanduser('~/.cache/trtllm-error.log')
 
 
 class OpenAIServer:
 
     def __init__(self,
-                 llm: LLM,
+                 llm_factory: Callable[[], LLM],
                  model: str,
                  tool_parser: str,
                  server_role: Optional["ServerRole"],
                  metadata_server_cfg: "MetadataServerConfig",
                  prometheus_port: int = None):
-        self.llm = llm
-        self.tokenizer = llm.tokenizer
+        self.llm_factory = llm_factory
+        self.llm = llm_factory()
+        self.tokenizer = self.llm.tokenizer
         #self.metadata_server = create_metadata_server(metadata_server_cfg)
         self.server_role = server_role
         self.binding_addr = None  # Will be set in __call__
         self.tool_parser = tool_parser
-        self.metrics = TensorRTMetrics(model_name=model, llm=llm)
+        self.metrics = TensorRTMetrics(model_name=model, get_executor=lambda: self.llm._executor if hasattr(self.llm, '_executor') else None)
         self.prometheus_server = PrometheusServer(port=prometheus_port) if prometheus_port else None
+        self.is_restarting = False
 
         # Initialize tool call manager
         self.tool_call_manager = ToolCallManager(self.tokenizer, self.tool_parser)
-        hf_tokenizer_path = llm._hf_model_dir or self.tokenizer.tokenizer.name_or_path
-        trust_remote_code = llm.args.trust_remote_code
+        hf_tokenizer_path = self.llm._hf_model_dir or self.tokenizer.tokenizer.name_or_path
+        trust_remote_code = self.llm.args.trust_remote_code
         try:
             self.processor = AutoProcessor.from_pretrained(hf_tokenizer_path, trust_remote_code=trust_remote_code)
             self.model_config = AutoConfig.from_pretrained(hf_tokenizer_path)
@@ -149,8 +152,36 @@ class OpenAIServer:
         self.app.add_api_route("/v1/chat/completions",
                                self.openai_chat,
                                methods=["POST"])
+        self.app.add_api_route("/restart", self.handle_restart, methods=["POST"])
+
+    def restart_llm (self):
+        self.is_restarting = True
+        t0 = time.time()
+        logger.info("Shutting down LLM instance...")
+        self.llm.shutdown()
+        time.sleep(1)
+
+        try:
+            os.remove(ERROR_LOG_PATH)
+        except Exception as e:
+            pass
+        self.metrics.cleanup_tracks()
+
+        logger.info("\n\n\n--------------------------")
+        logger.info("Restarting LLM instance...")
+        self.llm = self.llm_factory()
+        self.is_restarting = False
+
+        logger.info(f"LLM instance restarted in {time.time() - t0:.2f} seconds.")
 
     async def health(self) -> Response:
+        if self.is_restarting:
+            return Response(status_code=503)
+
+        def restart_gen(msg):
+            yield msg
+            self.restart_llm()
+
         # check error log
         if os.path.exists(ERROR_LOG_PATH):
             mtime = os.path.getmtime(ERROR_LOG_PATH)
@@ -159,9 +190,8 @@ class OpenAIServer:
                     lines = f.readlines()
                     last_line = lines[-1].strip() if lines else ""
                     logger.error(f'Fatal error from worker detected: {last_line}', )
-                    time.sleep(1)
-                    os._exit(-1)
-                return Response(content=last_line, status_code=500)
+
+                return StreamingResponse(restart_gen("Workers are restarting"), media_type="text/event-stream")
 
         # Check for pending requests and yield timeout
         waiting_time = 0
@@ -173,8 +203,8 @@ class OpenAIServer:
                 logger.error(
                     f"Critical timeout, pending generators: {active_requests}, waiting timeout: {waiting_time:.4f}, {request_post_time:.4f}."
                 )
-                time.sleep(1)
-                os._exit(-1)
+
+                return StreamingResponse(restart_gen("Workers are restarting"), media_type="text/event-stream")
             elif request_post_time > 1 and active_requests > 1 and waiting_time > 1:
                 logger.warning(
                     f"Pending generators: {active_requests}, waiting timeout: {waiting_time:.4f}, {request_post_time:.4f}."
@@ -187,6 +217,22 @@ class OpenAIServer:
                 logger.info(f"Pending requests: {active_requests}, waiting time: {waiting_time:.4f}s, ({request_post_time:.4f}s)")
 
         return Response(status_code=200)
+
+    async def handle_restart(self, request: Request) -> Response:
+        if self.is_restarting:
+            return Response(status_code=404)
+
+        body = await request.body()
+        token = body.decode("utf-8") if isinstance(body, bytes) else str(body)
+        secret = hashlib.md5(ERROR_LOG_PATH.encode('utf-8')).hexdigest()
+        if token == secret:
+            def restart_gen():
+                yield 'Restarting...\n'
+                self.restart_llm()
+                yield 'Done.'
+            return StreamingResponse(restart_gen(), media_type="text/event-stream")
+
+        return Response(status_code=404)
 
     async def version(self) -> JSONResponse:
         ver = {"version": VERSION}
@@ -214,6 +260,9 @@ class OpenAIServer:
 
     async def openai_chat(self, request: ChatCompletionRequest, raw_request: Request) -> Response:
 
+        while self.is_restarting:
+            time.sleep(1)
+
         def get_role() -> str:
             if request.add_generation_prompt:
                 role = "assistant"
@@ -237,6 +286,8 @@ class OpenAIServer:
                     self.metrics.track_token_generation(request_id, len(promise.outputs[0].token_ids))
                     yield pp_res
                     self.last_yield_time = time.time()
+                    if self.is_restarting:
+                        break
             token_count = len(promise.outputs[0].token_ids)
 
             finish_reason = "stop"
@@ -364,7 +415,8 @@ class OpenAIServer:
 
     async def openai_completion(self, request: CompletionRequest, raw_request: Request) -> Response:
 
-        prompts = []
+        while self.is_restarting:
+            time.sleep(1)
 
         def merge_promises(
             promises: List[RequestOutput],
@@ -376,6 +428,8 @@ class OpenAIServer:
             async def producer(i: int, promise: RequestOutput, postproc_params: Optional[PostprocParams]):
                 async for output in promise:
                     await outputs.put((output, postproc_params))
+                    if self.is_restarting:
+                        break
                 finished[i] = True
 
             _tasks = [
