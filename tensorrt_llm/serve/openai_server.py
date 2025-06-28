@@ -156,6 +156,7 @@ class OpenAIServer:
 
     def restart_llm (self):
         self.is_restarting = True
+        t0 = time.time()
         logger.info("Shutting down LLM instance...")
         self.llm.shutdown()
         time.sleep(1)
@@ -170,6 +171,8 @@ class OpenAIServer:
         logger.info("Restarting LLM instance...")
         self.llm = self.llm_factory()
         self.is_restarting = False
+
+        logger.info(f"LLM instance restarted in {time.time() - t0:.2f} seconds.")
 
     async def health(self) -> Response:
         if self.is_restarting:
@@ -216,6 +219,9 @@ class OpenAIServer:
         return Response(status_code=200)
 
     async def handle_restart(self, request: Request) -> Response:
+        if self.is_restarting:
+            return Response(status_code=404)
+
         body = await request.body()
         token = body.decode("utf-8") if isinstance(body, bytes) else str(body)
         secret = hashlib.md5(ERROR_LOG_PATH.encode('utf-8')).hexdigest()
