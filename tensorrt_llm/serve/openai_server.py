@@ -68,6 +68,7 @@ class OpenAIServer:
         self.tool_parser = tool_parser
         self.metrics = TensorRTMetrics(model_name=model, get_executor=lambda: self.llm._executor if hasattr(self.llm, '_executor') else None)
         self.prometheus_server = PrometheusServer(port=prometheus_port) if prometheus_port else None
+        self.is_restarting = False
 
         # Initialize tool call manager
         self.tool_call_manager = ToolCallManager(self.tokenizer, self.tool_parser)
@@ -152,6 +153,7 @@ class OpenAIServer:
                                methods=["POST"])
 
     def restart_llm (self):
+        self.is_restarting = True
         logger.info("Shutting down LLM instance...")
         self.llm.shutdown()
         time.sleep(1)
@@ -160,12 +162,21 @@ class OpenAIServer:
             os.remove(ERROR_LOG_PATH)
         except Exception as e:
             pass
+        self.metrics.cleanup_tracks()
 
-        logger.info("\n--------------------------")
+        logger.info("\n\n\n--------------------------")
         logger.info("Restarting LLM instance...")
         self.llm = self.llm_factory()
+        self.is_restarting = False
 
     async def health(self) -> Response:
+        if self.is_restarting:
+            return Response(status_code=503)
+
+        def restart_gen(msg):
+            yield msg
+            self.restart_llm()
+
         # check error log
         if os.path.exists(ERROR_LOG_PATH):
             mtime = os.path.getmtime(ERROR_LOG_PATH)
@@ -174,12 +185,8 @@ class OpenAIServer:
                     lines = f.readlines()
                     last_line = lines[-1].strip() if lines else ""
                     logger.error(f'Fatal error from worker detected: {last_line}', )
-                    #time.sleep(1)
-                    #os._exit(-1)
-                    self.restart_llm()
 
-                # TODO
-                return Response(content=last_line, status_code=500)
+                return StreamingResponse(restart_gen("Workers are restarting"), media_type="text/event-stream")
 
         # Check for pending requests and yield timeout
         waiting_time = 0
@@ -191,8 +198,8 @@ class OpenAIServer:
                 logger.error(
                     f"Critical timeout, pending generators: {active_requests}, waiting timeout: {waiting_time:.4f}, {request_post_time:.4f}."
                 )
-                time.sleep(1)
-                os._exit(-1)
+
+                return StreamingResponse(restart_gen("Workers are restarting"), media_type="text/event-stream")
             elif request_post_time > 1 and active_requests > 1 and waiting_time > 1:
                 logger.warning(
                     f"Pending generators: {active_requests}, waiting timeout: {waiting_time:.4f}, {request_post_time:.4f}."
@@ -232,6 +239,9 @@ class OpenAIServer:
 
     async def openai_chat(self, request: ChatCompletionRequest, raw_request: Request) -> Response:
 
+        while self.is_restarting:
+            time.sleep(1)
+
         def get_role() -> str:
             if request.add_generation_prompt:
                 role = "assistant"
@@ -255,6 +265,8 @@ class OpenAIServer:
                     self.metrics.track_token_generation(request_id, len(promise.outputs[0].token_ids))
                     yield pp_res
                     self.last_yield_time = time.time()
+                    if self.is_restarting:
+                        break
             token_count = len(promise.outputs[0].token_ids)
 
             finish_reason = "stop"
@@ -382,7 +394,8 @@ class OpenAIServer:
 
     async def openai_completion(self, request: CompletionRequest, raw_request: Request) -> Response:
 
-        prompts = []
+        while self.is_restarting:
+            time.sleep(1)
 
         def merge_promises(
             promises: List[RequestOutput],
@@ -394,6 +407,8 @@ class OpenAIServer:
             async def producer(i: int, promise: RequestOutput, postproc_params: Optional[PostprocParams]):
                 async for output in promise:
                     await outputs.put((output, postproc_params))
+                    if self.is_restarting:
+                        break
                 finished[i] = True
 
             _tasks = [

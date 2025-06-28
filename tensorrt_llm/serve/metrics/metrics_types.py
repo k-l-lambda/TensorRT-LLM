@@ -121,6 +121,10 @@ class TensorRTMetrics:
             self._active_requests = max(0, self._active_requests - 1)
             self.metrics.gauge_scheduler_running.labels(model=self.model_name).set(self._active_requests)
 
+    def cleanup_tracks(self):
+        self._active_requests = 0
+        self._request_start_times = {}
+
     def update_system_metrics(self):
         """Update system metrics"""
         now = time.time()
