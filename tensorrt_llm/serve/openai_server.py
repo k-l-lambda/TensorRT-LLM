@@ -269,7 +269,7 @@ class OpenAIServer:
                                                   prompt_tokens=chat_response.usage.prompt_tokens,
                                                   generation_tokens=chat_response.usage.completion_tokens,
                                                   finish_reason=finish_reason)
-
+            self.metrics.track_token_generation(request_id)
             # Process tool calls if tools are available and no tool calls were found
             if (request.tools and len(request.tools) > 0 and 
                 chat_response.choices and len(chat_response.choices) > 0):
@@ -408,6 +408,7 @@ class OpenAIServer:
                 for pp_res in pp_result:
                     yield pp_res
                     self.last_yield_time = time.time()
+                    self.metrics.track_token_generation(rid)
 
             for rid in generate_length_recorder.keys():
                self.metrics.track_request_completion(rid, prompt_tokens=prompt_length_recorder[rid], generation_tokens=generate_length_recorder[rid], finish_reason="stop")
@@ -482,7 +483,6 @@ class OpenAIServer:
                     streaming=request.stream,
                     disaggregated_params=disaggregated_params
                 )
-                # print(f"Request ID: {promise.request_id}, Prompt: {prompt}")
 
                 self.metrics.track_request_start(promise.request_id, request.max_tokens)
                 asyncio.create_task(self.await_disconnected(raw_request, promise))
