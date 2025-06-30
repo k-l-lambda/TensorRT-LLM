@@ -117,15 +117,13 @@ class TensorRTMetrics:
         now = time.time()
         self._last_token_times[request_id] = now
 
-    def track_error(self, request_id: str, error_type: str):
+    def track_error(self, error_type: str):
         """Track error"""
         self.metrics.counter_request_errors.labels(model=self.model_name, error_type=error_type).inc()
 
         # Decrease active request count
-        if request_id in self._request_start_times:
-            del self._request_start_times[request_id]
-            self._active_requests = max(0, self._active_requests - 1)
-            self.metrics.gauge_scheduler_running.labels(model=self.model_name).set(self._active_requests)
+        self._active_requests = max(0, self._active_requests - 1)
+        self.metrics.gauge_scheduler_running.labels(model=self.model_name).set(self._active_requests)
 
     def update_system_metrics(self):
         """Update system metrics"""

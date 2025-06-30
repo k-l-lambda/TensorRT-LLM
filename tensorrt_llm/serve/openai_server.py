@@ -40,6 +40,7 @@ from tensorrt_llm.serve.tool_call_manager import ToolCallManager
 from tensorrt_llm.version import __version__ as VERSION
 from tensorrt_llm.serve.metrics import TensorRTMetrics
 from tensorrt_llm.serve.metrics.prometheus_server import PrometheusServer
+from tensorrt_llm.serve.structured_output import StructuredOutputManager, StructuredOutputRequest
 
 from .._utils import nvtx_mark
 
@@ -67,6 +68,13 @@ class OpenAIServer:
         self.tool_parser = tool_parser
         self.metrics = TensorRTMetrics(model_name=model, llm=llm)
         self.prometheus_server = PrometheusServer(port=prometheus_port) if prometheus_port else None
+
+        # Initialize structured output manager
+        self.structured_output_manager = StructuredOutputManager(llm_config=llm.args)
+        self.structured_output_manager.set_tokenizer(self.tokenizer)
+
+        # Store structured output requests
+        self._structured_output_requests = {}
 
         # Initialize tool call manager
         self.tool_call_manager = ToolCallManager(self.tokenizer, self.tool_parser)
@@ -134,6 +142,38 @@ class OpenAIServer:
         return JSONResponse(content=error_response.model_dump(),
                             status_code=error_response.code)
 
+    def _setup_structured_output(self, request, sampling_params):
+        """Setup structured output for a request if needed."""
+        if (hasattr(sampling_params, 'guided_decoding') and 
+            sampling_params.guided_decoding is not None):
+            
+            # Create structured output request
+            structured_output_request = StructuredOutputRequest(sampling_params=sampling_params)
+            
+            # Store in our dictionary instead of adding to request object
+            request_id = id(request)
+            self._structured_output_requests[request_id] = {
+                'structured_output_request': structured_output_request,
+                'use_structured_output': True
+            }
+            
+            # Initialize grammar
+            self.structured_output_manager.grammar_init(request, self)
+            
+            logger.info(f"Structured output initialized for request {request_id}")
+        else:
+            # Clear any existing structured output for this request
+            request_id = id(request)
+            if request_id in self._structured_output_requests:
+                del self._structured_output_requests[request_id]
+
+    def _get_structured_output_info(self, request):
+        """Get structured output info for a request."""
+        request_id = id(request)
+        return self._structured_output_requests.get(request_id, {
+            'structured_output_request': None,
+            'use_structured_output': False
+        })
 
     def register_routes(self):
         self.app.add_api_route("/health", self.health, methods=["GET"])
@@ -329,6 +369,9 @@ class OpenAIServer:
                 postproc_args=postproc_args,
             )
 
+            # Setup structured output if needed
+            self._setup_structured_output(request, sampling_params)
+
             promise = self.llm.generate_async(
                 inputs=prompt,
                 sampling_params=sampling_params,
@@ -354,11 +397,11 @@ class OpenAIServer:
                 return JSONResponse(content=response.model_dump())
         except CppExecutorError as e:
             # If internal executor error is raised, shutdown the server
-            self.metrics.track_error(request_id, "CppExecutorError")
+            self.metrics.track_error("CppExecutorError")
             signal.raise_signal(signal.SIGINT)
             raise e
         except Exception as e:
-            self.metrics.track_error(request_id, type(e).__name__)
+            self.metrics.track_error(type(e).__name__)
             traceback.print_exc()
             return self.create_error_response(str(e))
 
@@ -466,6 +509,10 @@ class OpenAIServer:
             postproc_params_collection: List[Optional[PostprocParams]] = []
             sampling_params = request.to_sampling_params()
             disaggregated_params = to_llm_disaggregated_params(request.disaggregated_params)
+            
+            # Setup structured output if needed
+            self._setup_structured_output(request, sampling_params)
+            
             for idx, prompt in enumerate(prompts):
                 postproc_args = CompletionPostprocArgs.from_request(request)
                 postproc_args.prompt_idx = idx
@@ -505,13 +552,11 @@ class OpenAIServer:
                 return JSONResponse(content=response.model_dump())
         except CppExecutorError as e:
             # If internal executor error is raised, shutdown the server
-            for request_id in generate_length_recorder.keys():
-                self.metrics.track_error(request_id, "CppExecutorError")
+            self.metrics.track_error("CppExecutorError")
             signal.raise_signal(signal.SIGINT)
             raise e
         except Exception as e:
-            for request_id in generate_length_recorder.keys():
-                self.metrics.track_error(request_id, type(e).__name__)
+            self.metrics.track_error(type(e).__name__)
             traceback.print_exc()
             return self.create_error_response(str(e))
 

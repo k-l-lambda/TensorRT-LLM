@@ -183,11 +183,10 @@ class Metrics:
             name="tensorrt_llm:request_success_total",
             documentation="Count of successfully processed requests.",
             labelnames=labelnames + [Metrics.labelname_finish_reason])
-        self.counter_request_errors = self._gauge_cls(
+        self.counter_request_errors = self._counter_cls(
             name="tensorrt_llm:request_error_total",
             documentation="Number of errors.",
-            labelnames=labelnames,
-            multiprocess_mode="sum")
+            labelnames=labelnames)
 
         # Speculative decoding stats
         self.gauge_spec_decode_draft_acceptance_rate = self._gauge_cls(
