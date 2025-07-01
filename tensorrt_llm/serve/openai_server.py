@@ -152,7 +152,7 @@ class OpenAIServer:
         self.app.add_api_route("/v1/chat/completions",
                                self.openai_chat,
                                methods=["POST"])
-        self.app.add_api_route("/restart", self.handle_restart, methods=["POST"])
+        self.app.add_api_route("/restart", self.handle_restart, methods=["POST", "GET"])
 
     def restart_llm (self):
         self.is_restarting = True
