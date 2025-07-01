@@ -48,6 +48,8 @@ class TensorRTMetrics:
         # Request tracking
         self._active_requests = 0
         self._request_start_times = {}
+        self._first_token_times = {}
+        self._last_token_times = {}
 
     def track_request_start(self, request_id: str, max_tokens: int = 100):
         """Track request start"""
@@ -85,6 +87,9 @@ class TensorRTMetrics:
         if generation_tokens > 0:
             self.metrics.counter_generation_tokens.labels(model=self.model_name).inc(generation_tokens)
             self.metrics.histogram_num_generation_tokens_request.labels(model=self.model_name).observe(generation_tokens)
+            if request_id in self._first_token_times and request_id in self._last_token_times:
+                tpot = (self._last_token_times[request_id]-self._first_token_times[request_id])/generation_tokens
+                self.metrics.histogram_time_per_output_token.labels(model=self.model_name).observe(tpot)
 
         # Update latency metrics
         if latency > 0:
@@ -96,21 +101,21 @@ class TensorRTMetrics:
 
         logger.debug(f"Request {request_id} completed, latency: {latency:.3f}s, active requests: {self._active_requests}")
 
-    def track_token_generation(self, request_id: str, num_tokens: int):
-        """Track token generation"""
-        if num_tokens > 0:
-            # self.metrics.counter_generation_tokens.labels(model=self.model_name).inc(num_tokens)
-            # ?
-            pass
-
-        # Track token generation in engine collector if available
-        if self.engine_collector:
-            self.engine_collector.track_token_generation(request_id, num_tokens)
-
     def track_first_token(self, request_id: str):
         """Track first token generation"""
+        now = time.time()
+        if request_id in self._first_token_times:
+            return
+        else:
+            self._first_token_times[request_id] = now
+            self.metrics.histogram_time_to_first_token.labels(model=self.model_name).observe(self._first_token_times[request_id]-self._request_start_times[request_id])
         if self.engine_collector:
             self.engine_collector.track_first_token(request_id)
+
+    def track_token_generation(self, request_id: str):
+        """Track token generation"""
+        now = time.time()
+        self._last_token_times[request_id] = now
 
     def track_error(self, request_id: str, error_type: str):
         """Track error"""
