@@ -213,6 +213,8 @@ class OpenAIServer:
 
     async def openai_chat(self, request: ChatCompletionRequest, raw_request: Request) -> Response:
 
+        request_id = None
+
         def get_role() -> str:
             if request.add_generation_prompt:
                 role = "assistant"
@@ -353,11 +355,11 @@ class OpenAIServer:
                 return JSONResponse(content=response.model_dump())
         except CppExecutorError as e:
             # If internal executor error is raised, shutdown the server
-            self.metrics.track_error("CppExecutorError")
+            self.metrics.track_error(request_id, "CppExecutorError")
             signal.raise_signal(signal.SIGINT)
             raise e
         except Exception as e:
-            self.metrics.track_error(type(e).__name__)
+            self.metrics.track_error(request_id, type(e).__name__)
             traceback.print_exc()
             return self.create_error_response(str(e))
 
@@ -505,11 +507,13 @@ class OpenAIServer:
                 return JSONResponse(content=response.model_dump())
         except CppExecutorError as e:
             # If internal executor error is raised, shutdown the server
-            self.metrics.track_error("CppExecutorError")
+            for request_id in generate_length_recorder.keys():
+                self.metrics.track_error(request_id, type(e).__name__)
             signal.raise_signal(signal.SIGINT)
             raise e
         except Exception as e:
-            self.metrics.track_error(type(e).__name__)
+            for request_id in generate_length_recorder.keys():
+                self.metrics.track_error(request_id, type(e).__name__)
             traceback.print_exc()
             return self.create_error_response(str(e))
 
