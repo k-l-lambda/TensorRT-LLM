@@ -198,8 +198,9 @@ class OpenAIServer:
         active_requests = self.metrics._active_requests
         if active_requests > 0:
             waiting_time = time.time() - self.last_yield_time
+            requesting_time = time.time() - self.last_request_time
             request_post_time = self.last_request_time - self.last_yield_time
-            if request_post_time > 1 and active_requests > 1 and waiting_time > 300:
+            if request_post_time > 1 and active_requests > 1 and requesting_time > 5 and waiting_time > 300:
                 logger.error(
                     f"Critical timeout, pending generators: {active_requests}, waiting timeout: {waiting_time:.4f}, {request_post_time:.4f}."
                 )

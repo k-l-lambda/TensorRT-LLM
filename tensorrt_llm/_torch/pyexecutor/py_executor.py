@@ -1898,6 +1898,8 @@ class PyExecutor:
                 log.write(datetime.datetime.now().strftime("%m-%d-%Y %H:%M:%S.%f\t"))
                 log.write(error_msg)
                 log.write('\n')
+            time.sleep(5)
+            os.exit(-1)
 
     def _terminate_request(self, request: LlmRequest):
         self.resource_manager.free_resources(request)
