@@ -263,6 +263,7 @@ class OpenAIServer:
 
         while self.is_restarting:
             time.sleep(1)
+        request_id = None
 
         def get_role() -> str:
             if request.add_generation_prompt:
@@ -321,7 +322,7 @@ class OpenAIServer:
                                                   prompt_tokens=chat_response.usage.prompt_tokens,
                                                   generation_tokens=chat_response.usage.completion_tokens,
                                                   finish_reason=finish_reason)
-
+            self.metrics.track_token_generation(request_id)
             # Process tool calls if tools are available and no tool calls were found
             if (request.tools and len(request.tools) > 0 and 
                 chat_response.choices and len(chat_response.choices) > 0):
@@ -463,6 +464,7 @@ class OpenAIServer:
                 for pp_res in pp_result:
                     yield pp_res
                     self.last_yield_time = time.time()
+                    self.metrics.track_token_generation(rid)
 
             for rid in generate_length_recorder.keys():
                self.metrics.track_request_completion(rid, prompt_tokens=prompt_length_recorder[rid], generation_tokens=generate_length_recorder[rid], finish_reason="stop")
@@ -561,7 +563,7 @@ class OpenAIServer:
         except CppExecutorError as e:
             # If internal executor error is raised, shutdown the server
             for request_id in generate_length_recorder.keys():
-                self.metrics.track_error(request_id, "CppExecutorError")
+                self.metrics.track_error(request_id, type(e).__name__)
             signal.raise_signal(signal.SIGINT)
             raise e
         except Exception as e:
