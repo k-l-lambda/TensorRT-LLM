@@ -231,6 +231,13 @@ class OpenAIServer:
                     output_tokens_len += 1
                     yield pp_res
                     self.last_yield_time = time.time()
+
+            id_len = len(promise.outputs[0].token_ids)
+            if id_len > 1000:
+                text_len = len(promise.outputs[0].text)
+                output_byte_id_rate = text_len / id_len
+                print(f'chat.stream.{output_byte_id_rate=}')
+
             yield f"data: [DONE]\n\n"
             nvtx_mark("generation ends")
             self.num_pending_generator -= 1
@@ -246,6 +253,13 @@ class OpenAIServer:
             else:
                 post_processor, args = postproc_params.post_processor, postproc_params.postproc_args
                 chat_response = post_processor(promise, args)
+
+            if chat_response.choices and chat_response.choices[0].message:
+                id_len = chat_response.usage.completion_tokens
+                if id_len > 1000:
+                    text_len = len(chat_response.choices[0].message.content)
+                    output_byte_id_rate = text_len / id_len
+                    print(f'chat.{output_byte_id_rate=}')
 
             # Process tool calls if tools are available and no tool calls were found
             if (request.tools and len(request.tools) > 0 and 
@@ -382,6 +396,13 @@ class OpenAIServer:
                 for pp_res in pp_result:
                     yield pp_res
                     self.last_yield_time = time.time()
+
+                id_len = len(request_output.outputs[0].token_ids)
+                if id_len > 1000:
+                    text_len = len(request_output.outputs[0].text)
+                    output_byte_id_rate = text_len / id_len
+                    print(f'completion.stream.{output_byte_id_rate=}')
+
             yield f"data: [DONE]\n\n"
             self.num_pending_generator -= len(prompts)
 
@@ -396,6 +417,12 @@ class OpenAIServer:
                     pp_result = post_processor(request_output, args)
                 else:
                     pp_result = request_output.outputs[0]._postprocess_result
+
+                id_len = len(request_output.outputs[0].token_ids) if len(request_output.outputs) > 0 else 0
+                if id_len > 1000:
+                    text_len = len(request_output.outputs[0].text)
+                    output_byte_id_rate = text_len / id_len
+                    print(f'completion.{output_byte_id_rate=}')
 
                 choices, usage = pp_result.choices, pp_result.usage
                 all_choices.extend(choices)
