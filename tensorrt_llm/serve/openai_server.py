@@ -237,6 +237,10 @@ class OpenAIServer:
                 text_len = len(promise.outputs[0].text)
                 output_byte_id_rate = text_len / id_len
                 print(f'chat.stream.{output_byte_id_rate=}')
+                if output_byte_id_rate < 1:
+                    print(f'{promise.outputs[0].text=}')
+                    yield f"data: [DONE]\n\n"
+                    os._exit(-1)
 
             yield f"data: [DONE]\n\n"
             nvtx_mark("generation ends")
@@ -260,6 +264,8 @@ class OpenAIServer:
                     text_len = len(chat_response.choices[0].message.content)
                     output_byte_id_rate = text_len / id_len
                     print(f'chat.{output_byte_id_rate=}')
+                    if output_byte_id_rate < 1:
+                        print(f'{chat_response.choices[0].message.content=}')
 
             # Process tool calls if tools are available and no tool calls were found
             if (request.tools and len(request.tools) > 0 and 
@@ -402,6 +408,10 @@ class OpenAIServer:
                     text_len = len(request_output.outputs[0].text)
                     output_byte_id_rate = text_len / id_len
                     print(f'completion.stream.{output_byte_id_rate=}')
+                    if output_byte_id_rate < 1:
+                        print(f'{request_output.outputs[0].text=}')
+                        yield f"data: [DONE]\n\n"
+                        os._exit(-1)
 
             yield f"data: [DONE]\n\n"
             self.num_pending_generator -= len(prompts)
@@ -423,6 +433,8 @@ class OpenAIServer:
                     text_len = len(request_output.outputs[0].text)
                     output_byte_id_rate = text_len / id_len
                     print(f'completion.{output_byte_id_rate=}')
+                    if output_byte_id_rate < 1:
+                        print(f'{request_output.outputs[0].text=}')
 
                 choices, usage = pp_result.choices, pp_result.usage
                 all_choices.extend(choices)
