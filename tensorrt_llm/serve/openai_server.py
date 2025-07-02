@@ -105,6 +105,7 @@ class OpenAIServer:
 
         self.last_yield_time = time.time()
         self.last_request_time = self.last_yield_time
+        self.output_byte_id_rate = 4
 
         # Delete error log file if it exists
         if os.path.exists(ERROR_LOG_PATH):
@@ -192,6 +193,10 @@ class OpenAIServer:
                     logger.error(f'Fatal error from worker detected: {last_line}', )
 
                 return StreamingResponse(restart_gen("Workers are restarting"), media_type="text/event-stream")
+
+        if self.output_byte_id_rate < 1:
+            logger.error(f"Exceptional output byte/id rate: {self.output_byte_id_rate:.3f}")
+            return StreamingResponse(restart_gen("Workers are restarting"), media_type="text/event-stream")
 
         # Check for pending requests and yield timeout
         waiting_time = 0
@@ -292,6 +297,12 @@ class OpenAIServer:
                         break
             token_count = len(promise.outputs[0].token_ids)
 
+            id_len = len(promise.outputs[0].token_ids)
+            if id_len > 1000:
+                text_len = len(promise.outputs[0].text)
+                self.output_byte_id_rate = text_len / id_len
+                #print(f'{text_len=}, {id_len=}, {text_len / id_len=}')
+
             finish_reason = "stop"
             if promise.outputs:
                 finish_reason = promise.outputs[0].finish_reason or "stop"
@@ -318,6 +329,13 @@ class OpenAIServer:
             finish_reason = "stop"
             if chat_response.choices:
                 finish_reason = chat_response.choices[0].finish_reason or "stop"
+
+            if chat_response.choices and chat_response.choices[0].message:
+                id_len = chat_response.usage.completion_tokens
+                if id_len > 1000:
+                    text_len = len(chat_response.choices[0].message.content)
+                    self.output_byte_id_rate = text_len / id_len
+
             self.metrics.track_request_completion(request_id,
                                                   prompt_tokens=chat_response.usage.prompt_tokens,
                                                   generation_tokens=chat_response.usage.completion_tokens,
@@ -466,6 +484,12 @@ class OpenAIServer:
                     self.last_yield_time = time.time()
                     self.metrics.track_token_generation(rid)
 
+                #print(f'{request_output.outputs[0]=}')
+                id_len = len(request_output.outputs[0].token_ids)
+                if id_len > 1000:
+                    text_len = len(request_output.outputs[0].text)
+                    self.output_byte_id_rate = text_len / id_len
+
             for rid in generate_length_recorder.keys():
                self.metrics.track_request_completion(rid, prompt_tokens=prompt_length_recorder[rid], generation_tokens=generate_length_recorder[rid], finish_reason="stop")
             yield f"data: [DONE]\n\n"
@@ -484,6 +508,11 @@ class OpenAIServer:
                 rid = request_output.request_id
                 prompt_length_recorder[rid] = len(request_output.prompt_token_ids)
                 generate_length_recorder[rid] = len(request_output.outputs[0].token_ids)
+
+                id_len = len(request_output.outputs[0].token_ids)
+                if id_len > 1000:
+                    text_len = len(request_output.outputs[0].text)
+                    self.output_byte_id_rate = text_len / id_len
 
                 choices, usage = pp_result.choices, pp_result.usage
                 all_choices.extend(choices)
