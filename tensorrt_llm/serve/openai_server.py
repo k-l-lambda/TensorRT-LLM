@@ -285,7 +285,7 @@ class OpenAIServer:
             async for res in promise:
                 pp_results = res.outputs[0]._postprocess_result if self.postproc_worker_enabled else post_processor(res, args)
                 for pp_res in pp_results:
-                    self.metrics.track_token_generation(request_id, len(promise.outputs[0].token_ids))
+                    self.metrics.track_token_generation(request_id)
                     yield pp_res
                     self.last_yield_time = time.time()
                     if self.is_restarting:
