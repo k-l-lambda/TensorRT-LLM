@@ -306,7 +306,7 @@ class OpenAIServer:
                 text_len = len(promise.outputs[0].text)
                 self.output_byte_id_rate = text_len / id_len
                 if self.output_byte_id_rate < 1:
-                    logger.warn(f"Short output: {promise.outputs[0].text=}")
+                    logger.warning(f"Short output: {promise.outputs[0].text=}")
                 #print(f'{text_len=}, {id_len=}, {text_len / id_len=}')
 
             finish_reason = "stop"
@@ -342,7 +342,7 @@ class OpenAIServer:
                     text_len = len(chat_response.choices[0].message.content)
                     self.output_byte_id_rate = text_len / id_len
                     if self.output_byte_id_rate < 1:
-                        logger.warn(f"Short output: {chat_response.choices[0].message.content=}")
+                        logger.warning(f"Short output: {chat_response.choices[0].message.content=}")
 
             self.metrics.track_request_completion(request_id,
                                                   prompt_tokens=chat_response.usage.prompt_tokens,
@@ -500,7 +500,7 @@ class OpenAIServer:
                     text_len = len(request_output.outputs[0].text)
                     self.output_byte_id_rate = text_len / id_len
                     if self.output_byte_id_rate < 1:
-                        logger.warn(f"Short output: {request_output.outputs[0].text=}")
+                        logger.warning(f"Short output: {request_output.outputs[0].text=}")
 
             for rid in generate_length_recorder.keys():
                self.metrics.track_request_completion(rid, prompt_tokens=prompt_length_recorder[rid], generation_tokens=generate_length_recorder[rid], finish_reason="stop")
@@ -526,7 +526,7 @@ class OpenAIServer:
                     text_len = len(request_output.outputs[0].text)
                     self.output_byte_id_rate = text_len / id_len
                     if self.output_byte_id_rate < 1:
-                        logger.warn(f"Short output: {request_output.outputs[0].text=}")
+                        logger.warning(f"Short output: {request_output.outputs[0].text=}")
 
                 choices, usage = pp_result.choices, pp_result.usage
                 all_choices.extend(choices)
