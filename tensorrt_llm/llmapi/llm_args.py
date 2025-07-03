@@ -251,6 +251,12 @@ class MTPDecodingConfig(DecodingBaseConfig):
     decoding_type: ClassVar[str] = "MTP"
 
 
+class APIServerConfig(BaseModel):
+    tpot_timeout: Optional[float] = 300
+    refuse_service_when_buzy: Optional[bool] = False
+    byte_rate_fuse_threshold: Optional[float] = 0.9
+
+
 class PybindMirror(ABC):
     ''' A class containing the utilities for mirroring Python classes to
     pybinding classes.
@@ -892,6 +898,8 @@ class LlmArgs(BaseModel):
         LookaheadDecodingConfig, MedusaDecodingConfig, EagleDecodingConfig,
         MTPDecodingConfig]] = Field(default=None,
                                     description="Speculative decoding config.")
+
+    api_server_config: Optional[APIServerConfig] = Field(default=None, description="API server config.")
 
     batching_type: Optional[BatchingType] = Field(default=None,
                                                   description="Batching type.")

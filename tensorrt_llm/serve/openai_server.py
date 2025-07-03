@@ -71,6 +71,8 @@ class OpenAIServer:
         self.prometheus_server = PrometheusServer(port=prometheus_port) if prometheus_port else None
         self.is_restarting = False
 
+        self.api_server_config = self.llm.args.api_server_config
+
         # Initialize tool call manager
         self.tool_call_manager = ToolCallManager(self.tokenizer, self.tool_parser)
         hf_tokenizer_path = self.llm._hf_model_dir or self.tokenizer.tokenizer.name_or_path
@@ -177,7 +179,7 @@ class OpenAIServer:
 
     async def health(self) -> Response:
         if self.is_restarting:
-            return Response(status_code=503)
+            return Response(status_code=200 if self.api_server_config.refuse_service_when_buzy else 503, content="R")
 
         def restart_gen(msg):
             yield msg
@@ -194,7 +196,7 @@ class OpenAIServer:
 
                 return StreamingResponse(restart_gen("Workers are restarting"), media_type="text/event-stream")
 
-        if self.output_byte_id_rate < 1:
+        if self.output_byte_id_rate < self.api_server_config.byte_rate_fuse_threshold:
             logger.error(f"Exceptional output byte/id rate: {self.output_byte_id_rate:.3f}")
             return StreamingResponse(restart_gen("Workers are restarting"), media_type="text/event-stream")
 
@@ -205,7 +207,7 @@ class OpenAIServer:
             waiting_time = time.time() - self.last_yield_time
             requesting_time = time.time() - self.last_request_time
             request_post_time = self.last_request_time - self.last_yield_time
-            if request_post_time > 1 and active_requests > 1 and requesting_time > 5 and waiting_time > 300:
+            if request_post_time > 1 and active_requests > 1 and requesting_time > 5 and waiting_time > self.api_server_config.tpot_timeout:
                 logger.error(
                     f"Critical timeout, pending generators: {active_requests}, waiting timeout: {waiting_time:.4f}, {request_post_time:.4f}."
                 )
@@ -217,7 +219,7 @@ class OpenAIServer:
                 )
                 return Response(
                     content=f"Pending request timeout, {waiting_time} seconds.",
-                    status_code=500,
+                    status_code=200 if self.api_server_config.refuse_service_when_buzy else 500,
                 )
             else:
                 logger.info(f"Pending requests: {active_requests}, waiting time: {waiting_time:.4f}s, ({request_post_time:.4f}s)")
@@ -267,6 +269,8 @@ class OpenAIServer:
     async def openai_chat(self, request: ChatCompletionRequest, raw_request: Request) -> Response:
 
         while self.is_restarting:
+            if self.api_server_config.refuse_service_when_buzy:
+                return Response(status_code=503)
             time.sleep(1)
         request_id = None
 
@@ -436,6 +440,8 @@ class OpenAIServer:
     async def openai_completion(self, request: CompletionRequest, raw_request: Request) -> Response:
 
         while self.is_restarting:
+            if self.api_server_config.refuse_service_when_buzy:
+                return Response(status_code=503)
             time.sleep(1)
 
         def merge_promises(
