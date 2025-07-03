@@ -186,7 +186,7 @@ class Metrics:
         self.counter_request_errors = self._counter_cls(
             name="tensorrt_llm:request_error_total",
             documentation="Number of errors.",
-            labelnames=labelnames)
+            labelnames=labelnames + ["error_type"])
 
         # Speculative decoding stats
         self.gauge_spec_decode_draft_acceptance_rate = self._gauge_cls(
