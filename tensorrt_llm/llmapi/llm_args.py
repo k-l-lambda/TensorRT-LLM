@@ -255,6 +255,7 @@ class APIServerConfig(BaseModel):
     tpot_timeout: Optional[float] = 300
     refuse_service_when_buzy: Optional[bool] = False
     byte_rate_fuse_threshold: Optional[float] = 0.9
+    queue_requests_limit: Optional[int] = None
 
 
 class PybindMirror(ABC):

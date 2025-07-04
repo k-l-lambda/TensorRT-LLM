@@ -72,6 +72,7 @@ class OpenAIServer:
         self.is_restarting = False
 
         self.api_server_config = self.llm.args.api_server_config
+        self.last_stat = dict()
 
         # Initialize tool call manager
         self.tool_call_manager = ToolCallManager(self.tokenizer, self.tool_parser)
@@ -200,29 +201,39 @@ class OpenAIServer:
             logger.error(f"Exceptional output byte/id rate: {self.output_byte_id_rate:.3f}")
             return StreamingResponse(restart_gen("Workers are restarting"), media_type="text/event-stream")
 
+        stats = [s async for s in self.llm.get_stats_async(0.1)]
+        #if len(stats) > 0:
+        #    print(f'{len(stats)=}, {stats[-1]=}')
+        self.last_stat = stats[-1] if len(stats) > 0 else dict()
+
         # Check for pending requests and yield timeout
         waiting_time = 0
-        active_requests = self.metrics._active_requests
-        if active_requests > 0:
+        pending_requests = self.metrics._active_requests
+        numActiveRequests, numQueuedRequests = None, None
+        if "numActiveRequests" in self.last_stat:
+            numActiveRequests = self.last_stat["numActiveRequests"]
+            numQueuedRequests = self.last_stat["numQueuedRequests"]
+            pending_requests = numActiveRequests + numQueuedRequests
+        if pending_requests > 0:
             waiting_time = time.time() - self.last_yield_time
             requesting_time = time.time() - self.last_request_time
             request_post_time = self.last_request_time - self.last_yield_time
-            if request_post_time > 1 and active_requests > 1 and requesting_time > 5 and waiting_time > self.api_server_config.tpot_timeout:
+            if request_post_time > 1 and pending_requests > 1 and requesting_time > 5 and waiting_time > self.api_server_config.tpot_timeout:
                 logger.error(
-                    f"Critical timeout, pending generators: {active_requests}, waiting timeout: {waiting_time:.4f}, {request_post_time:.4f}."
+                    f"Critical timeout, pending requests: {pending_requests}, waiting timeout: {waiting_time:.4f}, {request_post_time:.4f}."
                 )
 
                 return StreamingResponse(restart_gen("Workers are restarting"), media_type="text/event-stream")
-            elif request_post_time > 1 and active_requests > 1 and waiting_time > 1:
+            elif request_post_time > 1 and pending_requests > 1 and waiting_time > 1:
                 logger.warning(
-                    f"Pending generators: {active_requests}, waiting timeout: {waiting_time:.4f}, {request_post_time:.4f}."
+                    f"Pending requests: {pending_requests}({numActiveRequests}+{numQueuedRequests}), waiting timeout: {waiting_time:.4f}, {request_post_time:.4f}."
                 )
                 return Response(
                     content=f"Pending request timeout, {waiting_time} seconds.",
                     status_code=200 if self.api_server_config.refuse_service_when_buzy else 500,
                 )
             else:
-                logger.info(f"Pending requests: {active_requests}, waiting time: {waiting_time:.4f}s, ({request_post_time:.4f}s)")
+                logger.info(f"Pending requests: {pending_requests}({numActiveRequests}+{numQueuedRequests}), waiting time: {waiting_time:.4f}s, ({request_post_time:.4f}s)")
 
         return Response(status_code=200)
 
@@ -272,6 +283,12 @@ class OpenAIServer:
             if self.api_server_config.refuse_service_when_buzy:
                 return Response(status_code=503)
             time.sleep(1)
+
+        if self.api_server_config.refuse_service_when_buzy and self.api_server_config.queue_requests_limit is not None:
+            queue_requests = self.last_stat.get('numQueuedRequests', 0)
+            if queue_requests > self.api_server_config.queue_requests_limit:
+                return Response(status_code=503)
+
         request_id = None
 
         def get_role() -> str:
@@ -306,7 +323,7 @@ class OpenAIServer:
                 text_len = len(promise.outputs[0].text)
                 self.output_byte_id_rate = text_len / id_len
                 if self.output_byte_id_rate < 1:
-                    logger.warning(f"Short output: {promise.outputs[0].text=}")
+                    logger.warning(f"Short output: {self.output_byte_id_rate=}, {promise.outputs[0].text=}")
                 #print(f'{text_len=}, {id_len=}, {text_len / id_len=}')
 
             finish_reason = "stop"
@@ -342,7 +359,7 @@ class OpenAIServer:
                     text_len = len(chat_response.choices[0].message.content)
                     self.output_byte_id_rate = text_len / id_len
                     if self.output_byte_id_rate < 1:
-                        logger.warning(f"Short output: {chat_response.choices[0].message.content=}")
+                        logger.warning(f"Short output: {self.output_byte_id_rate=}, {chat_response.choices[0].message.content=}")
 
             self.metrics.track_request_completion(request_id,
                                                   prompt_tokens=chat_response.usage.prompt_tokens,
@@ -448,6 +465,11 @@ class OpenAIServer:
                 return Response(status_code=503)
             time.sleep(1)
 
+        if self.api_server_config.refuse_service_when_buzy and self.api_server_config.queue_requests_limit is not None:
+            queue_requests = self.last_stat.get('numQueuedRequests', 0)
+            if queue_requests > self.api_server_config.queue_requests_limit:
+                return Response(status_code=503)
+
         def merge_promises(
             promises: List[RequestOutput],
             postproc_params_collections: List[Optional[PostprocParams]]
@@ -500,7 +522,7 @@ class OpenAIServer:
                     text_len = len(request_output.outputs[0].text)
                     self.output_byte_id_rate = text_len / id_len
                     if self.output_byte_id_rate < 1:
-                        logger.warning(f"Short output: {request_output.outputs[0].text=}")
+                        logger.warning(f"Short output: {self.output_byte_id_rate=}, {request_output.outputs[0].text=}")
 
             for rid in generate_length_recorder.keys():
                self.metrics.track_request_completion(rid, prompt_tokens=prompt_length_recorder[rid], generation_tokens=generate_length_recorder[rid], finish_reason="stop")
@@ -526,7 +548,7 @@ class OpenAIServer:
                     text_len = len(request_output.outputs[0].text)
                     self.output_byte_id_rate = text_len / id_len
                     if self.output_byte_id_rate < 1:
-                        logger.warning(f"Short output: {request_output.outputs[0].text=}")
+                        logger.warning(f"Short output: {self.output_byte_id_rate=}, {request_output.outputs[0].text=}")
 
                 choices, usage = pp_result.choices, pp_result.usage
                 all_choices.extend(choices)
