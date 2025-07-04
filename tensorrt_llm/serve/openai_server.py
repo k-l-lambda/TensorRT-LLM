@@ -199,6 +199,7 @@ class OpenAIServer:
 
         if self.output_byte_id_rate < self.api_server_config.byte_rate_fuse_threshold:
             logger.error(f"Exceptional output byte/id rate: {self.output_byte_id_rate:.3f}")
+            self.output_byte_id_rate = 4
             return StreamingResponse(restart_gen("Workers are restarting"), media_type="text/event-stream")
 
         stats = [s async for s in self.llm.get_stats_async(0.1)]
