@@ -173,6 +173,7 @@ class OpenAIServer:
         self.metrics.cleanup_tracks()
 
         # Kill all child processes of the current process
+        logger.info("Killing children processes...")
         parent = psutil.Process(os.getpid())
         for child in parent.children(recursive=True):
             try:
