@@ -349,7 +349,7 @@ class ExecutorBindingsProxy(GenerationExecutor):
 
         for f in self.mpi_futures:
             try:
-                f.result()
+                f.result(timeout=5)
             except:
                 # The errors are already captured in mpi_done_callback, ignored
                 # here
@@ -379,7 +379,7 @@ class ExecutorBindingsProxy(GenerationExecutor):
         self.kv_cache_events_queue.close()
 
         self.workers_started = False
-        self.mpi_session.shutdown()
+        self.mpi_session.shutdown(wait=False)
 
         # Process the errors in-case error during shutting down the threads
         self._handle_background_error()

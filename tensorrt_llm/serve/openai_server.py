@@ -48,6 +48,7 @@ TIMEOUT_KEEP_ALIVE = 5  # seconds.
 
 import os
 import hashlib
+import psutil
 ERROR_LOG_PATH = os.path.expanduser('~/.cache/trtllm-error.log')
 
 
@@ -170,6 +171,16 @@ class OpenAIServer:
         except Exception as e:
             pass
         self.metrics.cleanup_tracks()
+
+        # Kill all child processes of the current process
+        parent = psutil.Process(os.getpid())
+        for child in parent.children(recursive=True):
+            try:
+                #print(f'Killing child: {child.pid}')
+                child.terminate()
+            except Exception:
+                pass
+        psutil.wait_procs(parent.children(recursive=True), timeout=3)
 
         logger.info("\n\n\n--------------------------")
         logger.info("Restarting LLM instance...")
