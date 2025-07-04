@@ -701,9 +701,9 @@ class LLM:
                     f"Copying {file} to {target_engine_dir / file.name}\n")
                 shutil.copy(file, target_engine_dir / file.name)
 
-    def shutdown(self) -> None:
+    def shutdown(self, force=False) -> None:
         if hasattr(self, "_executor") and self._executor is not None:
-            self._executor.shutdown()
+            self._executor.shutdown(force=force)
             self._executor = None
 
         if hasattr(self, 'mpi_session') and self.mpi_session is not None:

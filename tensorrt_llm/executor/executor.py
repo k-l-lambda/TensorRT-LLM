@@ -269,7 +269,7 @@ class GenerationExecutor(ABC):
             raise e
 
     @abstractmethod
-    def shutdown(self):
+    def shutdown(self, force=False):
         pass
 
     @property
