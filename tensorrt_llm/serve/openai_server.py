@@ -163,7 +163,7 @@ class OpenAIServer:
         self.is_restarting = True
         t0 = time.time()
         logger.info("Shutting down LLM instance...")
-        self.llm.shutdown()
+        self.llm.shutdown(force=True)
         time.sleep(1)
 
         try:
