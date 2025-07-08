@@ -185,7 +185,18 @@ class OpenAIServer:
 
         logger.info("\n\n\n--------------------------")
         logger.info("Restarting LLM instance...")
-        self.llm = self.llm_factory()
+        try:
+            # Timeout after 60 seconds (adjust as needed)
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.llm_factory)
+                self.llm = future.result(timeout=300)
+        except concurrent.futures.TimeoutError:
+            logger.error("llm_factory() timed out. Exiting process.")
+            os._exit(1)
+        except Exception as e:
+            logger.error(f"llm_factory() failed: {e}")
+            os._exit(2)
         self.is_restarting = False
 
         logger.info(f"LLM instance restarted in {time.time() - t0:.2f} seconds.")
