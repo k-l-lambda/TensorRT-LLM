@@ -343,7 +343,7 @@ class OpenAIServer:
             token_count = len(promise.outputs[0].token_ids)
 
             id_len = len(promise.outputs[0].token_ids)
-            if id_len > 1000:
+            if id_len > self.api_server_config.byte_rate_check_len:
                 text_len = len(promise.outputs[0].text)
                 self.output_byte_id_rate = text_len / id_len
                 if self.output_byte_id_rate < 1:
@@ -379,7 +379,7 @@ class OpenAIServer:
 
             if chat_response.choices and chat_response.choices[0].message:
                 id_len = chat_response.usage.completion_tokens
-                if id_len > 1000:
+                if id_len > self.api_server_config.byte_rate_check_len:
                     text_len = len(chat_response.choices[0].message.content)
                     self.output_byte_id_rate = text_len / id_len
                     if self.output_byte_id_rate < 1:
@@ -542,7 +542,7 @@ class OpenAIServer:
 
                 #print(f'{request_output.outputs[0]=}')
                 id_len = len(request_output.outputs[0].token_ids)
-                if id_len > 1000:
+                if id_len > self.api_server_config.byte_rate_check_len:
                     text_len = len(request_output.outputs[0].text)
                     self.output_byte_id_rate = text_len / id_len
                     if self.output_byte_id_rate < 1:
@@ -568,7 +568,7 @@ class OpenAIServer:
                 generate_length_recorder[rid] = len(request_output.outputs[0].token_ids)
 
                 id_len = len(request_output.outputs[0].token_ids)
-                if id_len > 1000:
+                if id_len > self.api_server_config.byte_rate_check_len:
                     text_len = len(request_output.outputs[0].text)
                     self.output_byte_id_rate = text_len / id_len
                     if self.output_byte_id_rate < 1:
