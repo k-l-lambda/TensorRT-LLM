@@ -81,7 +81,7 @@ class OpenAIServer:
         trust_remote_code = self.llm.args.trust_remote_code
         try:
             self.processor = AutoProcessor.from_pretrained(hf_tokenizer_path, trust_remote_code=trust_remote_code)
-            self.model_config = AutoConfig.from_pretrained(hf_tokenizer_path)
+            self.model_config = AutoConfig.from_pretrained(hf_tokenizer_path, trust_remote_code=trust_remote_code)
         except Exception:
             logger.debug("Failed to load AutoProcessor or AutoConfig for %s", hf_tokenizer_path)
             self.processor = None
