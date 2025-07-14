@@ -361,7 +361,7 @@ class OpenAIServer:
             yield f"data: [DONE]\n\n"
             nvtx_mark("generation ends")
 
-            logger.info(f"<< {prompt_tokens_len}:{token_count}")
+            logger.info(f"hs<< {prompt_tokens_len}:{token_count}")
 
         async def create_chat_response(
                 promise: RequestOutput, postproc_params: PostprocParams) -> ChatCompletionResponse:
@@ -384,6 +384,7 @@ class OpenAIServer:
                     self.output_byte_id_rate = text_len / id_len
                     if self.output_byte_id_rate < 1:
                         logger.warning(f"Short output: {self.output_byte_id_rate=}, {chat_response.choices[0].message.content=}")
+                logger.info(f"h<< {len(promise.prompt_token_ids)}:{id_len}")
 
             self.metrics.track_request_completion(request_id,
                                                   prompt_tokens=chat_response.usage.prompt_tokens,
@@ -525,6 +526,7 @@ class OpenAIServer:
         prompt_length_recorder = {}
         async def create_completion_generator(
                 generator: AsyncIterator[Tuple[RequestOutput, Optional[PostprocParams]]]):
+            request_output = None
             async for request_output, postproc_params in generator:
                 rid = request_output.request_id
                 self.metrics.track_first_token(rid)
@@ -547,6 +549,10 @@ class OpenAIServer:
                     self.output_byte_id_rate = text_len / id_len
                     if self.output_byte_id_rate < 1:
                         logger.warning(f"Short output: {self.output_byte_id_rate=}, {request_output.outputs[0].text=}")
+                        break
+
+            if request_output is not None:
+                logger.info(f"cs<< {len(request_output.prompt_token_ids)}:{id_len}")
 
             for rid in generate_length_recorder.keys():
                self.metrics.track_request_completion(rid, prompt_tokens=prompt_length_recorder[rid], generation_tokens=generate_length_recorder[rid], finish_reason="stop")
@@ -573,6 +579,7 @@ class OpenAIServer:
                     self.output_byte_id_rate = text_len / id_len
                     if self.output_byte_id_rate < 1:
                         logger.warning(f"Short output: {self.output_byte_id_rate=}, {request_output.outputs[0].text=}")
+                logger.info(f"c<< {len(request_output.prompt_token_ids)}:{id_len}")
 
                 choices, usage = pp_result.choices, pp_result.usage
                 all_choices.extend(choices)
