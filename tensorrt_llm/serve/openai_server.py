@@ -481,7 +481,12 @@ class OpenAIServer:
         except Exception as e:
             self.metrics.track_error(request_id, type(e).__name__)
             traceback.print_exc()
-            return self.create_error_response(str(e))
+
+            status_code = HTTPStatus.BAD_REQUEST
+            if self.api_server_config.overwhelming_status_code is not None:
+                if "is larger than max_seq_len" in str(e):
+                    status_code = HTTPStatus(value=self.api_server_config.overwhelming_status_code)
+            return self.create_error_response(str(e), status_code=status_code)
 
     async def openai_completion(self, request: CompletionRequest, raw_request: Request) -> Response:
 
@@ -666,7 +671,12 @@ class OpenAIServer:
             for request_id in generate_length_recorder.keys():
                 self.metrics.track_error(request_id, type(e).__name__)
             traceback.print_exc()
-            return self.create_error_response(str(e))
+
+            status_code = HTTPStatus.BAD_REQUEST
+            if self.api_server_config.overwhelming_status_code is not None:
+                if "is larger than max_seq_len" in str(e):
+                    status_code = HTTPStatus(value=self.api_server_config.overwhelming_status_code)
+            return self.create_error_response(str(e), status_code=status_code)
 
     async def __call__(self, host, port):
         if self.prometheus_server is not None:
