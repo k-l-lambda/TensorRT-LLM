@@ -196,7 +196,7 @@ def launch_server(host: str,
 )
 @click.option(
     "--tool_parser",
-    type=click.Choice(["auto", "llama", "deepseek", "hermes", "qwen", "mistral"]),
+    type=click.Choice(["auto", "llama", "deepseek", "hermes", "qwen", "mistral", "kimik2"]),
     default=None,
     help="Specify the tool parser to use for function calling. 'auto' will auto-detect based on model output.",
 )
