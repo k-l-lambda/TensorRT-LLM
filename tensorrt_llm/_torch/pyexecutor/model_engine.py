@@ -1022,6 +1022,18 @@ class PyTorchModelEngine(ModelEngine):
         num_batches = self.mapping.pp_size
         return num_batches * self.batch_size
 
+    def _get_spec_request_ids(
+            self, scheduled_requests: ScheduledRequests) -> List[int]:
+        """
+        Get request ids for speculative decoding.
+        CUDA graph dummy request doesn't need spec processing.
+        """
+        filtered_request_ids = []
+        for request in scheduled_requests.all_requests:
+            if not request.is_cuda_graph_dummy:
+                filtered_request_ids.append(request.py_request_id)
+        return filtered_request_ids
+
     def _preprocess_inputs(self, inputs: Dict[str, Any]):
         """
         Make some changes to the device inputs and avoid block the async data transfer
@@ -1389,7 +1401,8 @@ class PyTorchModelEngine(ModelEngine):
             total_draft_lens = sum(draft_lens)
             spec_metadata.draft_tokens = self.draft_tokens_cuda[:
                                                                 total_draft_lens]
-            spec_metadata.request_ids = request_ids
+            spec_metadata.request_ids = self._get_spec_request_ids(
+                scheduled_requests)
             spec_metadata.gather_ids = self.gather_ids_cuda[:len(gather_ids)]
             spec_metadata.num_generations = len(
                 scheduled_requests.generation_requests)
@@ -1518,7 +1531,8 @@ class PyTorchModelEngine(ModelEngine):
             total_draft_lens = sum(draft_lens)
             spec_metadata.draft_tokens = self.draft_tokens_cuda[:
                                                                 total_draft_lens]
-            spec_metadata.request_ids = request_ids
+            spec_metadata.request_ids = self._get_spec_request_ids(
+                scheduled_requests)
             spec_metadata.gather_ids = self.gather_ids_cuda[:len(gather_ids)]
             spec_metadata.num_generations = len(
                 scheduled_requests.generation_requests)
