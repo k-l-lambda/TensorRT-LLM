@@ -258,6 +258,7 @@ class APIServerConfig(BaseModel):
     byte_rate_check_len: Optional[int] = 2000
     queue_requests_limit: Optional[int] = None
     overwhelming_status_code: Optional[int] = None
+    unavailable_health_status_code: Optional[int] = None
 
 
 class PybindMirror(ABC):

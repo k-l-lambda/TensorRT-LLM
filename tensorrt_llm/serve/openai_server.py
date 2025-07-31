@@ -203,7 +203,11 @@ class OpenAIServer:
 
     async def health(self) -> Response:
         if self.is_restarting:
-            return Response(status_code=200 if self.api_server_config.refuse_service_when_buzy else 503, content="R")
+            if self.api_server_config.unavailable_health_status_code is not None:
+                status_code = self.api_server_config.unavailable_health_status_code
+            else:
+                status_code = 200 if self.api_server_config.refuse_service_when_buzy else 503
+            return Response(status_code=status_code, content="R")
 
         def restart_gen(msg):
             yield msg
