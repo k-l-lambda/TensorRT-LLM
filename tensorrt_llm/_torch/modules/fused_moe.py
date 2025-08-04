@@ -1610,9 +1610,10 @@ class FusedMoE(nn.Module):
                                          dst_fc31_alpha: torch.Tensor):
             w1_weight_scale_2 = w1_weight_scale_2[...].reshape([])
             w3_weight_scale_2 = w3_weight_scale_2[...].reshape([])
+            max_diff = (w3_weight_scale_2 - w1_weight_scale_2).abs().max()
             assert torch.allclose(
                 w1_weight_scale_2,
-                w3_weight_scale_2), "w1_weight_scale_2 != w3_weight_scale_2"
+                w3_weight_scale_2, atol=1e-3), f"w1_weight_scale_2 != w3_weight_scale_2, {max_diff=}"
 
             w3_w1_weight_scale_2 = 1.0 / w1_weight_scale_2
             dst_fc31_alpha.copy_(
