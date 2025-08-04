@@ -556,14 +556,14 @@ class PyTorchModelEngine(ModelEngine):
                 is_gen=False,
                 max_num_draft_tokens=self.max_draft_len)
 
-            if remaining_tokens > 0:
-                final_request = kv_cache_manager.add_dummy_requests(
-                    request_ids=[full_len_request_num],
-                    token_nums=[remaining_tokens],
-                    is_gen=False,
-                    max_num_draft_tokens=self.max_draft_len)
+            #if remaining_tokens > 0:
+            #    final_request = kv_cache_manager.add_dummy_requests(
+            #        request_ids=[full_len_request_num],
+            #        token_nums=[remaining_tokens],
+            #        is_gen=False,
+            #        max_num_draft_tokens=self.max_draft_len)
 
-                requests += final_request
+            #    requests += final_request
 
             if spec_resource_manager is not None:
                 spec_resource_manager.add_dummy_requests(
