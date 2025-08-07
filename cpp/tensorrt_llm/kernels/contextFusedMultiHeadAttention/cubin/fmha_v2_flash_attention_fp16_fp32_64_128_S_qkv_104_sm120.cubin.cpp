@@ -1,3 +1,7 @@
+namespace tensorrt_llm
+{
+namespace kernels
+{
 /*
 * SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION &
 * AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
@@ -17097,3 +17101,5 @@ unsigned int cubin_fmha_v2_flash_attention_fp16_fp32_64_128_S_qkv_104_sm120_cu_c
 // clang-format on
 } // namespace kernels
 } // namespace tensorrt_llm
+}
+}

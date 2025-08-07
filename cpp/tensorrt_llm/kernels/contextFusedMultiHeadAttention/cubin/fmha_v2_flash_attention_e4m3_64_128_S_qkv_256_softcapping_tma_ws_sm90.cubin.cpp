@@ -1,3 +1,7 @@
+namespace tensorrt_llm
+{
+namespace kernels
+{
 unsigned char cubin_fmha_v2_flash_attention_e4m3_64_128_S_qkv_256_softcapping_tma_ws_sm90_cu_cubin[] = {
   0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x33, 0x07, 0x00, 0x00, 0x00,
   0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0xbe, 0x00, 0x81, 0x00, 0x00, 0x00,
@@ -18419,3 +18423,5 @@ unsigned char cubin_fmha_v2_flash_attention_e4m3_64_128_S_qkv_256_softcapping_tm
   0x00, 0x00, 0x00, 0x00
 };
 unsigned int cubin_fmha_v2_flash_attention_e4m3_64_128_S_qkv_256_softcapping_tma_ws_sm90_cu_cubin_len = 221008;
+}
+}

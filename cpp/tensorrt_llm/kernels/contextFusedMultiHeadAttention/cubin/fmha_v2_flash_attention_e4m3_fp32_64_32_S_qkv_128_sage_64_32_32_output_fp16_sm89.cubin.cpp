@@ -1,3 +1,7 @@
+namespace tensorrt_llm
+{
+namespace kernels
+{
 unsigned char cubin_fmha_v2_flash_attention_e4m3_fp32_64_32_S_qkv_128_sage_64_32_32_output_fp16_sm89_cu_cubin[] = {
   0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x33, 0x07, 0x00, 0x00, 0x00,
   0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0xbe, 0x00, 0x81, 0x00, 0x00, 0x00,
@@ -2479,3 +2483,5 @@ unsigned char cubin_fmha_v2_flash_attention_e4m3_fp32_64_32_S_qkv_128_sage_64_32
   0x00, 0x00, 0x00, 0x00
 };
 unsigned int cubin_fmha_v2_flash_attention_e4m3_fp32_64_32_S_qkv_128_sage_64_32_32_output_fp16_sm89_cu_cubin_len = 29728;
+}
+}
