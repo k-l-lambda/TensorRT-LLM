@@ -730,7 +730,7 @@ int main(int argc, char** argv)
         {
             attention_mask_type = Attention_mask_type::CAUSAL;
         }
-    }
+    //}
     else if (!strcmp(argv[ii], "-sliding-or-chunked-causal-mask"))
     {
         attention_mask_type = Attention_mask_type::SLIDING_OR_CHUNKED_CAUSAL;
@@ -1522,6 +1522,10 @@ for (size_t so = 0; so < s; ++so)
     for (size_t bi = 0; bi < b; ++bi)
     {
         int actual_seqlen = seqlens[bi];
+        for (size_t si = 0; si < s; ++si)
+        { // s_kv
+        // Are both the query and the key inside the sequence?
+        bool valid = (si < actual_seqlen) && (so < actual_seqlen);
         //  attention_mask_type == Attention_mask_type::CUSTOM_MASK
         if (attention_mask_type == Attention_mask_type::CUSTOM_MASK
             || attention_mask_type == Attention_mask_type::CAUSAL
@@ -1553,6 +1557,7 @@ for (size_t so = 0; so < s; ++so)
         {
             // The mask is stored as floats.
             mask_h[so * b * s + bi * s + si] = valid ? 1.f : 0.f; // mask dims [s_q, b, s_kv]
+        }
         }
     }
 }
