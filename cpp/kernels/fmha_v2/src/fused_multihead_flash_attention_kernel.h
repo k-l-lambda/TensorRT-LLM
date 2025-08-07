@@ -278,6 +278,8 @@ inline __device__ void device_flash_attention(Params const& params)
     // Load over the entire sequence length.
     for (int q_loop = 0, outer = 0; q_loop < q_loop_bound; q_loop += Cta_tile_p::M, outer++)
     {
+		if (q_loop > 1)
+			continue;
 
         // Reset the mask col.
         mask.reset();
@@ -294,6 +296,8 @@ inline __device__ void device_flash_attention(Params const& params)
 
         for (int kv_loop = 0; kv_loop < kv_loop_bound; kv_loop += Cta_tile_p::N)
         {
+			if (kv_loop > 1)
+				continue;
 
             // NOTE: causal mask
             if (Kernel_traits::MASK_VERSION == 3 && q_loop + Cta_tile_p::M <= kv_loop)
