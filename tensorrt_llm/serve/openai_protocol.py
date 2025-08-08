@@ -445,7 +445,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
     temperature: Optional[float] = 1.0
     top_p: Optional[float] = 1.0
     tools: Optional[List[ChatCompletionToolsParam]] = None
-    tool_choice: Optional[Union[Literal["none"],
+    tool_choice: Optional[Union[str, Literal["none"],
                                 ChatCompletionNamedToolChoiceParam]] = "none"
     user: Optional[str] = None
 
@@ -581,11 +581,12 @@ class ChatCompletionRequest(OpenAIBaseModel):
     @classmethod
     def check_tool_choice(cls, data):
         if "tool_choice" in data and data["tool_choice"] != "none":
-            if not isinstance(data["tool_choice"], dict):
-                raise ValueError("Currently only named tools are supported.")
-            if "tools" not in data or data["tools"] is None:
-                raise ValueError(
-                    "When using `tool_choice`, `tools` must be set.")
+            if type(data["tool_choice"]) is not str:
+                if not isinstance(data["tool_choice"], dict):
+                    raise ValueError("Currently only named tools are supported.")
+                if "tools" not in data or data["tools"] is None:
+                    raise ValueError(
+                        "When using `tool_choice`, `tools` must be set.")
         return data
 
     @model_validator(mode="before")
