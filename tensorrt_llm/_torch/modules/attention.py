@@ -213,6 +213,7 @@ class Attention(nn.Module):
         attention_window_size: Optional[int] = None,
         **kwargs,
     ) -> torch.Tensor:
+        #print(f'{hidden_states.shape=}')
         """
         Forward pass for the Attention module.
 
@@ -242,21 +243,28 @@ class Attention(nn.Module):
             if qkv_lora is not None:
                 qkv = qkv + qkv_lora
 
+        #print(f'{qkv.shape=}')
         q, k, v = qkv, None, None
         if self.qk_norm_type == QkNormType.pre_rope:
             q, k, v = self.split_qkv(q, k, v)
             q, k = self.apply_qk_norm(q, k)
+            #print(f'1.{k.shape=}')
         if self.apply_rotary_emb and position_ids is not None:
             q, k, v = self.split_qkv(q, k, v)
             q, k = self.rotary_emb(position_ids, [q, k])
             if self.qk_norm_type == QkNormType.post_rope:
                 q, k = self.apply_qk_norm(q, k)
+            #print(f'2.{k.shape=}')
         out_scale = None
 
         if self.o_proj.has_fp8_qdq or self.o_proj.has_nvfp4 or self.o_proj.has_fp8_block_scales:
             out_scale = self.o_proj.inv_input_scale
 
+        #print(f'3.{k.shape=}')
         q, k, v = self.convert_qkv(q, k, v)
+        #print(f'{q.shape=}, {type(k)=}')
+        #print(f'{attention_mask=}')
+        #print(f'{attn_metadata.num_generations=}, {attn_metadata.num_contexts=}')
         attn_output = self.attn.forward(
             q,
             k,
@@ -266,6 +274,7 @@ class Attention(nn.Module):
             attention_mask=attention_mask,
             mrope_config=mrope_config,
             attention_window_size=attention_window_size)
+        #print(f'{q.shape=}, {attn_output.shape=}')
         hidden_states = attn_output
         attn_output = self.o_proj(attn_output,
                                   all_reduce_params=all_reduce_params,

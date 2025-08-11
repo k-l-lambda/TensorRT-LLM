@@ -5,13 +5,17 @@ from . import IS_FLASHINFER_AVAILABLE
 from .interface import AttentionBackend, MLAParams, PositionalEmbeddingParams
 from .trtllm import TrtllmAttention
 from .vanilla import VanillaAttention
+from .sparse_vanilla import SparseVanillaAttention
 
 
 def get_attention_backend(backend_name: str) -> Type[AttentionBackend]:
     if backend_name == "VANILLA":
         return VanillaAttention
     elif backend_name == "TRTLLM":
-        return TrtllmAttention
+        #return TrtllmAttention
+        #from .flashinfer import FlashInferAttention
+        #return FlashInferAttention
+        return SparseVanillaAttention
     elif backend_name == "FLASHINFER" and IS_FLASHINFER_AVAILABLE:
         from .flashinfer import FlashInferAttention
 
