@@ -145,7 +145,7 @@ class SparseVanillaAttention(AttentionBackend[SparseVanillaAttentionMetadata]):
                 diagonal=0)
             attention_mask = attention_mask.unsqueeze(0)
             #print(f'{attention_mask[0, :4, :4]=}')
-            s.masked_fill(attention_mask == 0, float('-inf'))
+            s = s.masked_fill(attention_mask == 0, float('-inf'))
 
         s = torch.softmax(s, dim=-1)
         #print(f'{s.shape=}')
