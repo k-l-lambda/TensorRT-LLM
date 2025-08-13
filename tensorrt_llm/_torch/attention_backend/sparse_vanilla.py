@@ -128,12 +128,14 @@ class SparseVanillaAttention(AttentionBackend[SparseVanillaAttentionMetadata]):
 
         #return attn_output_unpad.reshape(attn_output_unpad.size(0), -1)
 
+        q /= head_dim**0.5
+
         # Q*K by einstein summation
         s = torch.einsum('shd,SHd->hsS', q, k)
 
-        s /= head_dim**0.5
-        s = torch.softmax(s, dim=-1)
-        #print(f'{s.shape=}')
+        # rewrite s computation by torch.matmul
+        #s2 = torch.matmul(q.transpose(0, 1), k.transpose(0, 1).transpose(-1, -2))
+        #assert torch.allclose(s, s2), f"Mismatch in attention scores: {s.shape} vs {s2.shape}"
 
         # apply causal mask if needed
         if attention_mask == PredefinedAttentionMask.CAUSAL:
@@ -143,7 +145,10 @@ class SparseVanillaAttention(AttentionBackend[SparseVanillaAttentionMetadata]):
                 diagonal=0)
             attention_mask = attention_mask.unsqueeze(0)
             #print(f'{attention_mask[0, :4, :4]=}')
-            s *= attention_mask
+            s.masked_fill(attention_mask == 0, float('-inf'))
+
+        s = torch.softmax(s, dim=-1)
+        #print(f'{s.shape=}')
 
         # S*V by einstein summation
         out = torch.einsum('hsS,SHd->shd', s, v)
