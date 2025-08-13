@@ -67,9 +67,14 @@ class SparseVanillaAttention(AttentionBackend[SparseVanillaAttentionMetadata]):
             k (Optional[torch.Tensor]): Key tensor with shape (seq_len, num_heads * head_dim) or None,
             v (Optional[torch.Tensor]): Value tensor with shape (seq_len, num_heads * head_dim) or None,
         """
-        o = torch.zeros_like(q)
+        #print(f'input: {q.shape=}')
+        dummy = torch.zeros_like(q)
+        if torch.cuda.is_current_stream_capturing():
+            return dummy
+
         # lazy loading
-        from flash_attn.flash_attn_interface import flash_attn_varlen_func
+        #from flash_attn.flash_attn_interface import flash_attn_varlen_func
+
         head_dim = q.shape[-1]
         is_fused_qkv = False
         if (k is None) or (v is None):
@@ -93,35 +98,58 @@ class SparseVanillaAttention(AttentionBackend[SparseVanillaAttentionMetadata]):
         assert v.dim() == 3
         seqlens_in_batch = metadata.seq_lens
         assert seqlens_in_batch is not None, "seq_len can not be None for remove padding inputs attention!"
-        if torch.cuda.is_current_stream_capturing():
-            return o
         max_seqlen_in_batch = seqlens_in_batch.max().item()
         cu_seqlens = F.pad(
             torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.int32),
             (1, 0)).to(q.device)
-        print(f'{cu_seqlens=}')
+        #print(f'{q.shape=}, {k.shape=}, {v.shape=}')
+        #print(f'{cu_seqlens=}')
 
         max_seqlen_q = max_seqlen_k = max_seqlen_in_batch
         cu_seqlens_q = cu_seqlens_k = cu_seqlens
 
-        attn_output_unpad = flash_attn_varlen_func(
-            q,
-            k,
-            v,
-            cu_seqlens_q,
-            cu_seqlens_k,
-            max_seqlen_q,
-            max_seqlen_k,
-            dropout_p=0.0,
-            softmax_scale=None,
-            causal=attention_mask == PredefinedAttentionMask.CAUSAL,
-            # window_size=(-1, -1),  # -1 means infinite context window
-            alibi_slopes=None,
-            deterministic=False,
-            return_attn_probs=False,
-        )
+        #print(f'{max_seqlen_q=}, {max_seqlen_k=}')
+        #attn_output_unpad = flash_attn_varlen_func(
+        #    q,
+        #    k,
+        #    v,
+        #    cu_seqlens_q,
+        #    cu_seqlens_k,
+        #    max_seqlen_q,
+        #    max_seqlen_k,
+        #    dropout_p=0.0,
+        #    softmax_scale=None,
+        #    causal=attention_mask == PredefinedAttentionMask.CAUSAL,
+        #    # window_size=(-1, -1),  # -1 means infinite context window
+        #    alibi_slopes=None,
+        #    deterministic=False,
+        #    return_attn_probs=False,
+        #)
 
-        return attn_output_unpad.reshape(attn_output_unpad.size(0), -1)
+        #return attn_output_unpad.reshape(attn_output_unpad.size(0), -1)
+
+        # Q*K by einstein summation
+        s = torch.einsum('shd,SHd->hsS', q, k)
+
+        s /= head_dim**0.5
+        s = torch.softmax(s, dim=-1)
+        #print(f'{s.shape=}')
+
+        # apply causal mask if needed
+        if attention_mask == PredefinedAttentionMask.CAUSAL:
+            attention_mask = torch.tril(
+                torch.ones((max_seqlen_in_batch, max_seqlen_in_batch),
+                           device=s.device, dtype=s.dtype),
+                diagonal=0)
+            attention_mask = attention_mask.unsqueeze(0)
+            #print(f'{attention_mask[0, :4, :4]=}')
+            s *= attention_mask
+
+        # S*V by einstein summation
+        out = torch.einsum('hsS,SHd->shd', s, v)
+        #print(f'{out.shape=}')
+
+        return out.reshape(out.size(0), -1)
 
     def forward(self,
                 q: torch.Tensor,
