@@ -11,7 +11,9 @@ def get_attention_backend(backend_name: str) -> Type[AttentionBackend]:
     if backend_name == "VANILLA":
         return VanillaAttention
     elif backend_name == "TRTLLM":
-        return TrtllmAttention
+        from .flashinfer import FlashInferAttention
+        return FlashInferAttention
+        #return TrtllmAttention
     elif backend_name == "FLASHINFER" and IS_FLASHINFER_AVAILABLE:
         from .flashinfer import FlashInferAttention
 

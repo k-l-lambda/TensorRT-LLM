@@ -454,6 +454,12 @@ class FlashInferAttention(AttentionBackend[FlashInferAttentionMetadata]):
                 *,
                 attention_mask: AttentionMask = PredefinedAttentionMask.CAUSAL,
                 **kwargs) -> torch.Tensor:
+        is_first = metadata.num_generations == 0 and q.shape[0] < 1023 and q.device.index == 0
+        #if is_first:
+        #    torch.save(q.cpu(), "/workspace1/q.pt")
+        #    torch.save(k.cpu(), "/workspace1/k.pt")
+        #    torch.save(v.cpu(), "/workspace1/v.pt")
+
         if attention_mask == PredefinedAttentionMask.CAUSAL:
             attention_mask_type = int(AttentionMaskType.causal)
             attention_mask_data = None
@@ -463,11 +469,43 @@ class FlashInferAttention(AttentionBackend[FlashInferAttentionMetadata]):
         else:
             raise ValueError("Unexpected attention mask type")
 
-        return forward_pattern(q, k, v, self.num_heads, self.head_dim,
+        o = forward_pattern(q, k, v, self.num_heads, self.head_dim,
                                self.num_kv_heads, self.layer_idx,
                                self.has_fp8_kv_cache, attention_mask_type,
                                attention_mask_data)
 
+        if is_first:
+            input = dict(q=q.cpu(), k=k.cpu(), v=v.cpu(),
+                        num_heads=self.num_heads, head_dim=self.head_dim,
+                        num_kv_heads=self.num_kv_heads, layer_idx=self.layer_idx,
+                        has_fp8_kv_cache=self.has_fp8_kv_cache,
+                        attention_mask_type=attention_mask_type,
+                        attention_mask_data=attention_mask_data)
+            output = o.cpu()
+
+            extra_attrs = get_model_extra_attrs()
+            metadata_ref = extra_attrs.get("attention_metadata", None)
+            metadata = metadata_ref()
+            #kv_cache = metadata.kv_cache_manager.get_buffers(self.layer_idx)
+
+            metadata_init = dict(
+                max_num_requests=metadata.max_num_requests,
+                max_num_tokens=metadata.max_num_tokens,
+                #kv_cache_manager=kv_cache_manager,
+                mapping=metadata.mapping,
+                runtime_features=metadata.runtime_features,
+                enable_flash_mla=metadata.enable_flash_mla,
+                enable_paged_context_mla=metadata.enable_paged_context_mla,
+            )
+            torch.save(dict(input=input, output=output, metadata_init=metadata_init), "/workspace1/forward_pattern.pt")
+            print('saved.')
+
+            exit()
+
+        #if is_first:
+        #    torch.save(o.cpu(), "/workspace1/o.pt")
+        #    exit()
+        return o
 
 @torch.library.custom_op("trtllm::flashinfer_forward", mutates_args=())
 def forward_pattern(
