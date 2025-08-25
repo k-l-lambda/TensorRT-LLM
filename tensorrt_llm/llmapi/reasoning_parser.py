@@ -18,6 +18,10 @@ class ReasoningParserResult:
 class BaseReasoningParser(ABC):
 
     @abstractmethod
+    def has_reasoning(self, prompt: str) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
     def parse(self, text: str) -> ReasoningParserResult:
         raise NotImplementedError
 
@@ -51,6 +55,9 @@ class DeepSeekR1Parser(BaseReasoningParser):
             reasoning_parser_result = ReasoningParserResult(
                 False, content=content, reasoning_content=reasoning_content)
         return reasoning_parser_result
+
+    def has_reasoning(self, prompt: str) -> bool:
+        return self.reasoning_begin in prompt
 
     def parse(self, text: str) -> ReasoningParserResult:
         if self.reasoning_end not in text:

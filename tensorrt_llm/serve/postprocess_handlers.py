@@ -41,6 +41,7 @@ class ChatPostprocArgs(PostprocArgs):
     reasoning_parser: Optional[str] = None
     reasoning_parser_dict: dict[int, BaseReasoningParser] = field(
         default_factory=dict)
+    prompt: Optional[str] = None
 
     @classmethod
     def from_request(cls, request: ChatCompletionRequest):
@@ -84,7 +85,8 @@ def apply_reasoning_parser(args: ChatPostprocArgs, output_index: int, text: str,
         reasoning_parser = args.reasoning_parser_dict[output_index]
 
     in_reasoning = False
-    if reasoning_parser is not None:
+    has_reasoning = reasoning_parser.has_reasoning(args.prompt) if (args.prompt and reasoning_parser is not None) else True
+    if reasoning_parser is not None and has_reasoning:
         if not streaming:
             result = reasoning_parser.parse(text)
         else:
