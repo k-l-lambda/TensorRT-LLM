@@ -28,6 +28,19 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
 								 head_dim)
 
 
+def scaled_dot_product_attention(q, k, v, attn_mask):
+	head_dim = q.size(1)
+	s = torch.einsum('bhsd,bhSd->bhsS', q, k)
+
+	s /= head_dim**0.5
+
+	s = s.masked_fill(attn_mask == 0, float('-inf'))
+	s = torch.softmax(s, dim=-1)
+
+	out = torch.matmul(s, v)
+
+	return out
+
 def prefill_forward(q, k, v, num_heads, head_dim, num_kv_heads, num_ctx_tokens):
 	qq = q[:num_ctx_tokens]
 	q_len = qq.shape[0]
@@ -46,13 +59,20 @@ def prefill_forward(q, k, v, num_heads, head_dim, num_kv_heads, num_ctx_tokens):
 	attn_mask = generate_causal_mask(1, q_len, cache_position, q.device) if q_len > 1 else None
 	#print(f'{key_states.shape=}, {value_states.shape=}')
 
-	attn_output = torch.nn.functional.scaled_dot_product_attention(
+	#attn_output = torch.nn.functional.scaled_dot_product_attention(
+	#	qq,
+	#	key_states,
+	#	value_states,
+	#	is_causal=True,
+	#	attn_mask=attn_mask,
+	#)
+	attn_output = scaled_dot_product_attention(
 		qq,
 		key_states,
 		value_states,
-		is_causal=True,
-		attn_mask=attn_mask,
+		attn_mask,
 	)
+
 	#print(f'{attn_output.shape=}')
 	return attn_output.transpose(1, 2).contiguous().view(q_len, -1)
 
@@ -72,10 +92,10 @@ def test_run_forward ():
 	v = v.view(-1, num_kv_heads, head_dim)
 
 	predicted_output = prefill_forward(q, k, v, num_heads, head_dim, num_kv_heads, num_ctx_tokens=12)
-	print(f'{predicted_output.shape=}')
-	print(f'{output.shape=}')
+	print(f'{predicted_output.shape=}, {predicted_output.dtype=}')
+	print(f'{output.shape=}, {output.dtype=}')
 
-	std_diff = (predicted_output - output).pow(2).mean().sqrt() / output.norm()
+	std_diff = (predicted_output - output).pow(2).sum().sqrt() / output.norm()
 	print(f'STD diff: {std_diff}')
 
 
