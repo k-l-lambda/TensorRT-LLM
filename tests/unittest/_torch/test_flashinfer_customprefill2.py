@@ -1,7 +1,7 @@
 
 import torch
 
-from tensorrt_llm._torch.attention_backend.sdpa import vanilla
+import tensorrt_llm._torch.attention_backend.sdpa as sdpa
 
 
 
@@ -55,12 +55,8 @@ def prefill_forward(q, k, v, num_heads, head_dim, num_kv_heads, num_ctx_tokens):
 	#	is_causal=True,
 	#	attn_mask=attn_mask,
 	#)
-	attn_output = vanilla(
-		qq,
-		key_states,
-		value_states,
-		attn_mask,
-	)
+	#attn_output = sdpa.vanilla(qq, key_states, value_states, attn_mask)
+	attn_output = sdpa.torch_(qq, key_states, value_states, attn_mask)
 
 	#print(f'{attn_output.shape=}')
 	return attn_output.transpose(1, 2).contiguous().view(q_len, -1)

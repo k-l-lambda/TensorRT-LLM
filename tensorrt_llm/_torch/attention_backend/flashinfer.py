@@ -10,6 +10,7 @@ from typing_extensions import Self
 
 from tensorrt_llm.functional import AttentionMaskType
 from tensorrt_llm.models.modeling_utils import QuantConfig
+import tensorrt_llm._torch.attention_backend.sdpa as sdpa
 
 from ..utils import get_global_attrs, get_model_extra_attrs
 from .interface import (AttentionBackend, AttentionMask, AttentionMetadata,
@@ -454,7 +455,7 @@ class FlashInferAttention(AttentionBackend[FlashInferAttentionMetadata]):
                 *,
                 attention_mask: AttentionMask = PredefinedAttentionMask.CAUSAL,
                 **kwargs) -> torch.Tensor:
-        is_first = metadata.num_generations == 0 and q.shape[0] < 1023 and q.device.index == 0
+        is_first = False#metadata.num_generations == 0 and q.shape[0] < 131000 and q.shape[0] > 6800 and q.device.index == 0
         #if is_first:
         #    torch.save(q.cpu(), "/workspace1/q.pt")
         #    torch.save(k.cpu(), "/workspace1/k.pt")
@@ -506,6 +507,32 @@ class FlashInferAttention(AttentionBackend[FlashInferAttentionMetadata]):
         #    torch.save(o.cpu(), "/workspace1/o.pt")
         #    exit()
         return o
+
+
+def generate_causal_mask(batch_size: int, target_length: int,
+                         cache_position: torch.Tensor, device: torch.device):
+    causal_mask = torch.arange(
+        target_length,
+        device=device).unsqueeze(0) <= cache_position.unsqueeze(-1)
+    causal_mask = causal_mask.expand(batch_size, 1, -1, -1)
+
+    return causal_mask
+
+
+def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """
+    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
+    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
+    """
+    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, :,
+                                  None, :, :].expand(batch, num_key_value_heads,
+                                                     n_rep, slen, head_dim)
+    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen,
+                                 head_dim)
+
 
 @torch.library.custom_op("trtllm::flashinfer_forward", mutates_args=())
 def forward_pattern(
@@ -568,11 +595,37 @@ def forward_pattern(
     num_generations = metadata.num_generations
     num_ctx_tokens = metadata.num_ctx_tokens
 
+    #def prefill_forward(plan_params: PlanParams):
+    #    wrapper = metadata.get_prefill_wrapper(plan_params)
+    #    output = wrapper.run(q[:num_ctx_tokens], kv_cache)
+    #    output = output.view(num_ctx_tokens, -1)
+    #    return output
+
     def prefill_forward(plan_params: PlanParams):
-        wrapper = metadata.get_prefill_wrapper(plan_params)
-        output = wrapper.run(q[:num_ctx_tokens], kv_cache)
-        output = output.view(num_ctx_tokens, -1)
-        return output
+        qq = q[:num_ctx_tokens]
+        q_len = qq.shape[0]
+        qq = qq.view(1, q_len, num_heads, head_dim).transpose(1, 2)
+
+        key_states = k[None].transpose(1, 2).to(q.dtype)
+        value_states = v[None].transpose(1, 2).to(q.dtype)
+
+        num_key_value_groups = num_heads // num_kv_heads
+        key_states = repeat_kv(key_states, num_key_value_groups)
+        value_states = repeat_kv(value_states, num_key_value_groups)
+
+        cache_position = torch.arange(0, q_len, device=q.device)
+        attn_mask = generate_causal_mask(1, q_len, cache_position, q.device) if q_len > 1 else None
+
+        #attn_output = torch.nn.functional.scaled_dot_product_attention(
+        #    qq,
+        #    key_states,
+        #    value_states,
+        #    is_causal=True,
+        #    attn_mask=attn_mask,
+        #)
+        attn_output = sdpa.vanilla(qq, key_states, value_states, attn_mask)
+        #print(f'{attn_output.shape=}')
+        return attn_output.transpose(1, 2).contiguous().view(q_len, -1)
 
     def decode_forward(plan_params: PlanParams):
         wrapper = metadata.get_decode_wrapper(plan_params)

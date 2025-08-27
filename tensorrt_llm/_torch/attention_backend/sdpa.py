@@ -1,14 +1,33 @@
 
+import math
 import torch
 
 
 
+def torch_ (query, key, value, attn_mask=None, scale=None):
+	L, S = query.size(-2), key.size(-2)
+	scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
+	attn_bias = torch.zeros(1, 1, L, S, dtype=query.dtype, device=query.device)
+
+	if attn_mask is not None:
+		if attn_mask.dtype == torch.bool:
+			attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
+		else:
+			attn_bias = attn_mask + attn_bias
+
+	attn_weight = query @ key.transpose(-2, -1) * scale_factor
+	attn_weight += attn_bias
+	attn_weight = torch.softmax(attn_weight, dim=-1)
+
+	return attn_weight @ value
+
+
 def vanilla (q, k, v, attn_mask):
-	print(f'{q.shape=}, {k.shape=}, {v.shape=}, {attn_mask.shape=}')
-	head_dim = q.size(1)
+	#print(f'{q.shape=}, {k.shape=}, {v.shape=}, {attn_mask.shape=}')
+	d_hidden = q.size(-1)
 	s = torch.einsum('bhsd,bhSd->bhsS', q, k)
 
-	s /= head_dim**0.5
+	s /= d_hidden**0.5
 
 	s = s.masked_fill(attn_mask == 0, float('-inf'))
 	s = torch.softmax(s, dim=-1)
@@ -19,10 +38,12 @@ def vanilla (q, k, v, attn_mask):
 
 
 def sparse (q, k, v, attn_mask):
-	batch, num_heads, q_len, kv_len = s.shape
-	s = torch.einsum('bhsd,bhSd->bhsS', q, k)
+	d_hidden = q.size(-1)
 
-	s /= num_heads**0.5
+	s = torch.einsum('bhsd,bhSd->bhsS', q, k)
+	batch, num_heads, q_len, kv_len = s.shape
+
+	s /= d_hidden**0.5
 
 	# Parameters for the mask (set these as needed)
 	block_size = 16
