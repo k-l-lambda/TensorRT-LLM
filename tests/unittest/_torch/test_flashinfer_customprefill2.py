@@ -56,7 +56,7 @@ def prefill_forward(q, k, v, num_heads, head_dim, num_kv_heads, num_ctx_tokens):
 	#	attn_mask=attn_mask,
 	#)
 	#attn_output = sdpa.vanilla(qq, key_states, value_states, attn_mask)
-	attn_output = sdpa.torch_(qq, key_states, value_states, attn_mask)
+	attn_output = sdpa.sparse(qq, key_states, value_states, attn_mask)
 
 	#print(f'{attn_output.shape=}')
 	return attn_output.transpose(1, 2).contiguous().view(q_len, -1)

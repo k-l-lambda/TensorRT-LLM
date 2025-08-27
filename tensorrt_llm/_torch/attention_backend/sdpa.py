@@ -46,8 +46,8 @@ def sparse (q, k, v, attn_mask):
 	s /= d_hidden**0.5
 
 	# Parameters for the mask (set these as needed)
-	block_size = 16
-	num_local_blocks = 2
+	block_size = 64
+	num_local_blocks = 8
 	vertical_stride = 32
 	homo_head_pattern = True  # or False, depending on your use case
 
