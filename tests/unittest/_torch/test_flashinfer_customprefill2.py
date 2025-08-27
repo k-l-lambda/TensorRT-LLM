@@ -1,6 +1,8 @@
 
 import torch
 
+from tensorrt_llm._torch.attention_backend.sdpa import vanilla
+
 
 
 def generate_causal_mask(batch_size: int, target_length: int,
@@ -28,19 +30,6 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
 								 head_dim)
 
 
-def scaled_dot_product_attention(q, k, v, attn_mask):
-	head_dim = q.size(1)
-	s = torch.einsum('bhsd,bhSd->bhsS', q, k)
-
-	s /= head_dim**0.5
-
-	s = s.masked_fill(attn_mask == 0, float('-inf'))
-	s = torch.softmax(s, dim=-1)
-
-	out = torch.matmul(s, v)
-
-	return out
-
 def prefill_forward(q, k, v, num_heads, head_dim, num_kv_heads, num_ctx_tokens):
 	qq = q[:num_ctx_tokens]
 	q_len = qq.shape[0]
@@ -66,7 +55,7 @@ def prefill_forward(q, k, v, num_heads, head_dim, num_kv_heads, num_ctx_tokens):
 	#	is_causal=True,
 	#	attn_mask=attn_mask,
 	#)
-	attn_output = scaled_dot_product_attention(
+	attn_output = vanilla(
 		qq,
 		key_states,
 		value_states,
@@ -91,7 +80,7 @@ def test_run_forward ():
 	k = k.view(-1, num_kv_heads, head_dim)
 	v = v.view(-1, num_kv_heads, head_dim)
 
-	predicted_output = prefill_forward(q, k, v, num_heads, head_dim, num_kv_heads, num_ctx_tokens=12)
+	predicted_output = prefill_forward(q, k, v, num_heads, head_dim, num_kv_heads, num_ctx_tokens=1000000)
 	print(f'{predicted_output.shape=}, {predicted_output.dtype=}')
 	print(f'{output.shape=}, {output.dtype=}')
 
