@@ -547,6 +547,21 @@ def forward_pattern(
     attention_mask_type: int,
     attention_mask_data: Optional[torch.Tensor],
 ) -> torch.Tensor:
+    return forward_pattern_impl(q, k, v, num_heads, head_dim, num_kv_heads, layer_idx, has_fp8_kv_cache, attention_mask_type, attention_mask_data)
+
+def forward_pattern_impl(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    num_heads: int,
+    head_dim: int,
+    num_kv_heads: int,
+    layer_idx: int,
+    has_fp8_kv_cache: bool,
+    attention_mask_type: int,
+    attention_mask_data: Optional[torch.Tensor],
+    metadata: Optional[AttentionMetadata] = None,
+) -> torch.Tensor:
     '''
     Wrapping the flashinfer forward as a custom op is required to fix `torch.compile` graph breaks,
     otherwise it will graph break when calling `metadata.num_contexts` since it convert tensor's sum directly to int.
@@ -595,37 +610,37 @@ def forward_pattern(
     num_generations = metadata.num_generations
     num_ctx_tokens = metadata.num_ctx_tokens
 
-    #def prefill_forward(plan_params: PlanParams):
-    #    wrapper = metadata.get_prefill_wrapper(plan_params)
-    #    output = wrapper.run(q[:num_ctx_tokens], kv_cache)
-    #    output = output.view(num_ctx_tokens, -1)
-    #    return output
-
     def prefill_forward(plan_params: PlanParams):
-        qq = q[:num_ctx_tokens]
-        q_len = qq.shape[0]
-        qq = qq.view(1, q_len, num_heads, head_dim).transpose(1, 2)
+        wrapper = metadata.get_prefill_wrapper(plan_params)
+        output = wrapper.run(q[:num_ctx_tokens], kv_cache)
+        output = output.view(num_ctx_tokens, -1)
+        return output
 
-        key_states = k[None].transpose(1, 2).to(q.dtype)
-        value_states = v[None].transpose(1, 2).to(q.dtype)
-
-        num_key_value_groups = num_heads // num_kv_heads
-        key_states = repeat_kv(key_states, num_key_value_groups)
-        value_states = repeat_kv(value_states, num_key_value_groups)
-
-        cache_position = torch.arange(0, q_len, device=q.device)
-        attn_mask = generate_causal_mask(1, q_len, cache_position, q.device) if q_len > 1 else None
-
-        #attn_output = torch.nn.functional.scaled_dot_product_attention(
-        #    qq,
-        #    key_states,
-        #    value_states,
-        #    is_causal=True,
-        #    attn_mask=attn_mask,
-        #)
-        attn_output = sdpa.vanilla(qq, key_states, value_states, attn_mask)
-        #print(f'{attn_output.shape=}')
-        return attn_output.transpose(1, 2).contiguous().view(q_len, -1)
+#    def prefill_forward(plan_params: PlanParams):
+#        qq = q[:num_ctx_tokens]
+#        q_len = qq.shape[0]
+#        qq = qq.view(1, q_len, num_heads, head_dim).transpose(1, 2)
+#
+#        key_states = k[None].transpose(1, 2).to(q.dtype)
+#        value_states = v[None].transpose(1, 2).to(q.dtype)
+#
+#        num_key_value_groups = num_heads // num_kv_heads
+#        key_states = repeat_kv(key_states, num_key_value_groups)
+#        value_states = repeat_kv(value_states, num_key_value_groups)
+#
+#        cache_position = torch.arange(0, q_len, device=q.device)
+#        attn_mask = generate_causal_mask(1, q_len, cache_position, q.device) if q_len > 1 else None
+#
+#        #attn_output = torch.nn.functional.scaled_dot_product_attention(
+#        #    qq,
+#        #    key_states,
+#        #    value_states,
+#        #    is_causal=True,
+#        #    attn_mask=attn_mask,
+#        #)
+#        attn_output = sdpa.sparse(qq, key_states, value_states, attn_mask)
+#        #print(f'{attn_output.shape=}')
+#        return attn_output.transpose(1, 2).contiguous().view(q_len, -1)
 
     def decode_forward(plan_params: PlanParams):
         wrapper = metadata.get_decode_wrapper(plan_params)
