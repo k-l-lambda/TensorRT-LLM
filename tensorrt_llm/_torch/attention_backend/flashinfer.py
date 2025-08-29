@@ -7,6 +7,7 @@ import flashinfer
 import torch
 from flashinfer.jit.core import check_cuda_arch
 from typing_extensions import Self
+from flashinfer.sparse import BlockSparseAttentionWrapper
 
 from tensorrt_llm.functional import AttentionMaskType
 from tensorrt_llm.models.modeling_utils import QuantConfig
@@ -45,7 +46,7 @@ class PlanParams:
 @dataclass(kw_only=True)
 class FlashInferWrappers:
     decode_wrapper: flashinfer.BatchDecodeWithPagedKVCacheWrapper
-    prefill_wrapper: Optional[flashinfer.BatchPrefillWithPagedKVCacheWrapper]
+    prefill_wrapper: Optional[BlockSparseAttentionWrapper]
 
     is_planned: bool
 
@@ -76,7 +77,7 @@ class FlashInferAttentionMetadata(AttentionMetadata):
 
     def get_prefill_wrapper(
         self, plan_params: PlanParams
-    ) -> flashinfer.BatchPrefillWithPagedKVCacheWrapper:
+    ) -> BlockSparseAttentionWrapper:
         assert plan_params in self._plan_params_to_wrappers, "Plan params not found, make sure to call plan()"
         result = self._plan_params_to_wrappers[plan_params].prefill_wrapper
         assert result is not None, "Prefill wrapper was not created in plan()"
@@ -340,34 +341,60 @@ class FlashInferAttentionMetadata(AttentionMetadata):
             prefill_wrapper = self._plan_params_to_wrappers[
                 plan_params].prefill_wrapper
         else:
-            # flashinfer fa3 backend has accuracy issue in H100 PCIe
-            prefill_wrapper = flashinfer.BatchPrefillWithPagedKVCacheWrapper(
-                self.workspace_buffer,
-                self.kv_layout,
-                backend='fa2',
-                qo_indptr_buf=self.qo_indptr,
-                paged_kv_indptr_buf=self.paged_kv_indptr_prefill,
-                paged_kv_indices_buf=self._paged_kv_indices,
-                paged_kv_last_page_len_buf=self._paged_kv_last_page_len,
-                use_cuda_graph=self.is_cuda_graph)
+            ## flashinfer fa3 backend has accuracy issue in H100 PCIe
+            #prefill_wrapper = flashinfer.BatchPrefillWithPagedKVCacheWrapper(
+            #    self.workspace_buffer,
+            #    self.kv_layout,
+            #    backend='fa2',
+            #    qo_indptr_buf=self.qo_indptr,
+            #    paged_kv_indptr_buf=self.paged_kv_indptr_prefill,
+            #    paged_kv_indices_buf=self._paged_kv_indices,
+            #    paged_kv_last_page_len_buf=self._paged_kv_last_page_len,
+            #    use_cuda_graph=self.is_cuda_graph)
+            workspace_buffer = self.workspace_buffer
+            prefill_wrapper = BlockSparseAttentionWrapper(workspace_buffer)
+            # Example: plan with a dense mask (all True) for causal attention
+            # You may want to adapt this to your actual sparse mask use case
+            batch_size = self.num_contexts
+            num_qo_heads = plan_params.num_heads
+            num_kv_heads = plan_params.num_kv_heads
+            head_dim = plan_params.head_dim
+            M = self._qo_indptr[self.num_contexts].item() if hasattr(self, '_qo_indptr') else 0
+            N = M  # For causal, square mask
+            R = 1
+            C = 1
+            indptr = torch.arange(0, M + 1, R, dtype=torch.int32, device="cuda")
+            indices = torch.arange(0, N // C, dtype=torch.int32, device="cuda")
+            if indices.shape[0] > 0:
+                prefill_wrapper.plan(
+                    indptr=indptr,
+                    indices=indices,
+                    M=M,
+                    N=N,
+                    R=R,
+                    C=C,
+                    num_qo_heads=num_qo_heads,
+                    num_kv_heads=num_kv_heads,
+                    head_dim=head_dim,
+                    causal=True,
+                )
 
         is_causal = plan_params.attention_mask_type == AttentionMaskType.causal
 
-        def prefill_plan():
-            prefill_wrapper.plan(
-                self.qo_indptr[:self.num_contexts + 1],
-                self.paged_kv_indptr_prefill[:self.num_contexts + 1],
-                self._paged_kv_indices[:self.num_context_blocks],
-                self._paged_kv_last_page_len[:self.num_contexts],
-                plan_params.num_heads,
-                plan_params.num_kv_heads,
-                plan_params.head_dim,
-                self.page_size,
-                causal=is_causal,
-                q_data_type=plan_params.q_dtype,
-                kv_data_type=plan_params.kv_dtype,
-            )
-
+        #def prefill_plan():
+        #    prefill_wrapper.plan(
+        #        self.qo_indptr[:self.num_contexts + 1],
+        #        self.paged_kv_indptr_prefill[:self.num_contexts + 1],
+        #        self._paged_kv_indices[:self.num_context_blocks],
+        #        self._paged_kv_last_page_len[:self.num_contexts],
+        #        plan_params.num_heads,
+        #        plan_params.num_kv_heads,
+        #        plan_params.head_dim,
+        #        self.page_size,
+        #        causal=is_causal,
+        #        q_data_type=plan_params.q_dtype,
+        #        kv_data_type=plan_params.kv_dtype,
+        #    )
         if plan_params in self._plan_params_to_wrappers:
             decode_wrapper = self._plan_params_to_wrappers[
                 plan_params].decode_wrapper
@@ -407,7 +434,8 @@ class FlashInferAttentionMetadata(AttentionMetadata):
         torch.cuda.current_stream().synchronize()
 
         if self.num_contexts > 0:
-            prefill_plan()
+            #prefill_plan()
+            pass
 
         if self.num_generations > 0:
             decode_plan()
@@ -612,7 +640,8 @@ def forward_pattern_impl(
 
     def prefill_forward(plan_params: PlanParams):
         wrapper = metadata.get_prefill_wrapper(plan_params)
-        output = wrapper.run(q[:num_ctx_tokens], kv_cache)
+        # Use BlockSparseAttentionWrapper.run instead of BatchPrefillWithPagedKVCacheWrapper.run
+        output = wrapper.run(q[:num_ctx_tokens], k[:num_ctx_tokens], v[:num_ctx_tokens])
         output = output.view(num_ctx_tokens, -1)
         return output
 
@@ -631,13 +660,7 @@ def forward_pattern_impl(
 #        cache_position = torch.arange(0, q_len, device=q.device)
 #        attn_mask = generate_causal_mask(1, q_len, cache_position, q.device) if q_len > 1 else None
 #
-#        #attn_output = torch.nn.functional.scaled_dot_product_attention(
-#        #    qq,
-#        #    key_states,
-#        #    value_states,
-#        #    is_causal=True,
-#        #    attn_mask=attn_mask,
-#        #)
+#        #attn_output = torch.nn.functional.scaled_dot_product_attention(qq, key_states, value_states, is_causal=True, attn_mask=attn_mask)
 #        attn_output = sdpa.sparse(qq, key_states, value_states, attn_mask)
 #        #print(f'{attn_output.shape=}')
 #        return attn_output.transpose(1, 2).contiguous().view(q_len, -1)
