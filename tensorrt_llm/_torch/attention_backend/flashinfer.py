@@ -7,7 +7,7 @@ import flashinfer
 import torch
 from flashinfer.jit.core import check_cuda_arch
 from typing_extensions import Self
-from flashinfer.sparse import BlockSparseAttentionWrapper
+from flashinfer.sparse import VariableBlockSparseAttentionWrapper
 
 from tensorrt_llm.functional import AttentionMaskType
 from tensorrt_llm.models.modeling_utils import QuantConfig
@@ -46,7 +46,7 @@ class PlanParams:
 @dataclass(kw_only=True)
 class FlashInferWrappers:
     decode_wrapper: flashinfer.BatchDecodeWithPagedKVCacheWrapper
-    prefill_wrapper: Optional[BlockSparseAttentionWrapper]
+    prefill_wrapper: Optional[VariableBlockSparseAttentionWrapper]
 
     is_planned: bool
 
@@ -77,7 +77,7 @@ class FlashInferAttentionMetadata(AttentionMetadata):
 
     def get_prefill_wrapper(
         self, plan_params: PlanParams
-    ) -> BlockSparseAttentionWrapper:
+    ) -> VariableBlockSparseAttentionWrapper:
         assert plan_params in self._plan_params_to_wrappers, "Plan params not found, make sure to call plan()"
         result = self._plan_params_to_wrappers[plan_params].prefill_wrapper
         assert result is not None, "Prefill wrapper was not created in plan()"
@@ -337,6 +337,8 @@ class FlashInferAttentionMetadata(AttentionMetadata):
                 "Make sure you run a few warmup runs before capturing the graph!"
             )
 
+        is_causal = plan_params.attention_mask_type == AttentionMaskType.causal
+
         if plan_params in self._plan_params_to_wrappers:
             prefill_wrapper = self._plan_params_to_wrappers[
                 plan_params].prefill_wrapper
@@ -352,34 +354,49 @@ class FlashInferAttentionMetadata(AttentionMetadata):
             #    paged_kv_last_page_len_buf=self._paged_kv_last_page_len,
             #    use_cuda_graph=self.is_cuda_graph)
             workspace_buffer = self.workspace_buffer
-            prefill_wrapper = BlockSparseAttentionWrapper(workspace_buffer)
-            # Example: plan with a dense mask (all True) for causal attention
-            # You may want to adapt this to your actual sparse mask use case
-            batch_size = self.num_contexts
+            prefill_wrapper = VariableBlockSparseAttentionWrapper(workspace_buffer, backend="auto")
+
+            block_size = 64
+            M = self._qo_indptr[self.num_contexts].item() if hasattr(self, '_qo_indptr') else 0
+            N = M
+
+            MB = M // block_size
+            NB = N // block_size
+
             num_qo_heads = plan_params.num_heads
             num_kv_heads = plan_params.num_kv_heads
             head_dim = plan_params.head_dim
-            M = self._qo_indptr[self.num_contexts].item() if hasattr(self, '_qo_indptr') else 0
-            N = M  # For causal, square mask
-            R = 1
-            C = 1
-            indptr = torch.arange(0, M + 1, R, dtype=torch.int32, device="cuda")
-            indices = torch.arange(0, N // C, dtype=torch.int32, device="cuda")
-            if indices.shape[0] > 0:
-                prefill_wrapper.plan(
-                    indptr=indptr,
-                    indices=indices,
-                    M=M,
-                    N=N,
-                    R=R,
-                    C=C,
-                    num_qo_heads=num_qo_heads,
-                    num_kv_heads=num_kv_heads,
-                    head_dim=head_dim,
-                    causal=True,
-                )
 
-        is_causal = plan_params.attention_mask_type == AttentionMaskType.causal
+            block_row_sz = torch.full((num_kv_heads, MB), block_size, dtype=torch.int32, device="cuda")
+            block_col_sz = torch.full((num_kv_heads, NB), block_size, dtype=torch.int32, device="cuda")
+            # Adjust the last block size to fit M exactly
+            if MB > 0:
+                block_row_sz[:, -1] = block_size - ((MB * block_size) - M)
+                block_col_sz[:, -1] = block_size - ((NB * block_size) - N)
+            #print(f'{M=}')
+            #print(f'{block_row_sz=}')
+            #print(f'{block_row_sz.sum()=}')
+            block_mask_map = torch.ones((num_kv_heads, MB, NB), dtype=torch.bool, device="cuda")  # dense mask
+
+            #print(F'{block_mask_map.shape=}')
+            #print(F'{block_row_sz.shape=}')
+            #print(F'{block_col_sz.shape=}')
+            #print(f'{block_row_sz.sum()=}')
+            #print(f'{block_col_sz.sum()=}')
+            #print(F'{num_qo_heads=}')
+            #print(F'{num_kv_heads=}')
+            #print(F'{head_dim=}')
+            #print(F'{plan_params.q_dtype=}')
+            prefill_wrapper.plan(
+                block_mask_map=block_mask_map,
+                block_row_sz=block_row_sz,
+                block_col_sz=block_col_sz,
+                num_qo_heads=num_qo_heads,
+                num_kv_heads=num_kv_heads,
+                head_dim=head_dim,
+                q_data_type=plan_params.q_dtype,
+                causal=is_causal,
+            )
 
         #def prefill_plan():
         #    prefill_wrapper.plan(
@@ -619,19 +636,33 @@ def forward_pattern_impl(
 
         if has_fp8_kv_cache:
             assert kv_cache.dtype == torch.float8_e4m3fn, f"KV cache should have fp8 dtype, but get {kv_cache.dtype}"
-            k = k.to(torch.float8_e4m3fn)
-            v = v.to(torch.float8_e4m3fn)
+            # Only convert to float8 if supported by the device and CUDA version
+            if torch.cuda.get_device_capability(k.device)[0] >= 9 and torch.version.cuda is not None and int(torch.version.cuda.split('.')[0]) >= 12:
+                k = k.to(torch.float8_e4m3fn)
+                v = v.to(torch.float8_e4m3fn)
+            else:
+                raise RuntimeError("float8_e4m3fn is only supported on H100 (sm90+) GPUs with CUDA 12+")
         assert k.dtype == v.dtype == kv_cache.dtype, f"KV cache dtype {kv_cache.dtype} does not match k/v dtype {k.dtype}/{v.dtype}"
+
+        # Ensure all tensors are on CUDA and have correct dtype
+        k = k.to(device=kv_cache.device, dtype=kv_cache.dtype)
+        v = v.to(device=kv_cache.device, dtype=kv_cache.dtype)
+        batch_indices = metadata.batch_indices.to(device=kv_cache.device, dtype=torch.int32)
+        positions = metadata.positions.to(device=kv_cache.device, dtype=torch.int32)
+        paged_kv_cache = kv_cache
+        kv_indices = metadata.paged_kv_indices.to(device=kv_cache.device, dtype=torch.int32)
+        kv_indptr = metadata.paged_kv_indptr.to(device=kv_cache.device, dtype=torch.int32)
+        kv_last_page_len = metadata.paged_kv_last_page_len.to(device=kv_cache.device, dtype=torch.int32)
 
         flashinfer.page.append_paged_kv_cache(
             append_key=k,
             append_value=v,
-            batch_indices=metadata.batch_indices,
-            positions=metadata.positions,
-            paged_kv_cache=kv_cache,
-            kv_indices=metadata.paged_kv_indices,
-            kv_indptr=metadata.paged_kv_indptr,
-            kv_last_page_len=metadata.paged_kv_last_page_len,
+            batch_indices=batch_indices,
+            positions=positions,
+            paged_kv_cache=paged_kv_cache,
+            kv_indices=kv_indices,
+            kv_indptr=kv_indptr,
+            kv_last_page_len=kv_last_page_len,
             kv_layout=metadata.kv_layout)
 
     num_contexts = metadata.num_contexts
@@ -640,10 +671,23 @@ def forward_pattern_impl(
 
     def prefill_forward(plan_params: PlanParams):
         wrapper = metadata.get_prefill_wrapper(plan_params)
-        # Use BlockSparseAttentionWrapper.run instead of BatchPrefillWithPagedKVCacheWrapper.run
-        output = wrapper.run(q[:num_ctx_tokens], k[:num_ctx_tokens], v[:num_ctx_tokens])
-        output = output.view(num_ctx_tokens, -1)
-        return output
+        # Use VariableBlockSparseAttentionWrapper.run instead of BatchPrefillWithPagedKVCacheWrapper.run
+        if num_ctx_tokens > 0:
+            # Ensure k and v are not None and have enough tokens
+            assert k is not None and v is not None, "k and v must not be None for prefill"
+            assert k.shape[0] >= num_ctx_tokens and v.shape[0] >= num_ctx_tokens, "k/v shape mismatch for prefill"
+            # Ensure all tensors are on the same device and correct dtype
+            device = q.device
+            dtype = q.dtype
+            q_ctx = q[:num_ctx_tokens].transpose(0, 1).contiguous().to(device=device, dtype=dtype)
+            k_ctx = k[:num_ctx_tokens].transpose(0, 1).contiguous().to(device=device, dtype=dtype)
+            v_ctx = v[:num_ctx_tokens].transpose(0, 1).contiguous().to(device=device, dtype=dtype)
+            #print(f'{q_ctx.shape=}, {q_ctx.dtype=}, {k_ctx.shape=}, {k_ctx.dtype=}, {v_ctx.shape=}, {v_ctx.dtype=}')
+            output = wrapper.run(q_ctx, k_ctx, v_ctx)
+            output = output.view(num_ctx_tokens, -1)
+            return output
+        else:
+            return torch.empty((0, q.shape[-1]), dtype=q.dtype, device=q.device)
 
 #    def prefill_forward(plan_params: PlanParams):
 #        qq = q[:num_ctx_tokens]

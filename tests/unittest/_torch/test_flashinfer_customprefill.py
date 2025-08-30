@@ -37,6 +37,21 @@ def test_run_forward ():
 	kv_cache_manager.add_dummy_requests(attn_metadata.request_ids, [seq_len])
 	attn_metadata.prepare()
 
+	import time
+
+	print("Warming up...")
+	for i in range(20):
+		forward_pattern_impl(**input, metadata=attn_metadata)
+
+	print("Running...")
+	time_n = 10000
+	start = time.time()
+	for i in range(time_n):
+		forward_pattern_impl(**input, metadata=attn_metadata)
+	end = time.time()
+	average_time = (end - start) / time_n
+	print(f'Average time per iteration: {average_time} s')
+	return
 	predicted_output = forward_pattern_impl(**input, metadata=attn_metadata).cpu()
 	#print(f'{predicted_output.shape=}')
 	#print(f'{output.shape=}')
