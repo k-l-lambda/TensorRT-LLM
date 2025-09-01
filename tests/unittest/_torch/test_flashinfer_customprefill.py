@@ -39,6 +39,13 @@ def test_run_forward ():
 
 	import time
 
+	predicted_output = forward_pattern_impl(**input, metadata=attn_metadata).cpu()
+	#print(f'{predicted_output.shape=}')
+	#print(f'{output.shape=}')
+
+	std_diff = (predicted_output - output).pow(2).sum().sqrt() / output.norm()
+	print(f'STD diff: {std_diff}')
+
 	print("Warming up...")
 	for i in range(20):
 		forward_pattern_impl(**input, metadata=attn_metadata)
@@ -51,14 +58,6 @@ def test_run_forward ():
 	end = time.time()
 	average_time = (end - start) / time_n
 	print(f'Average time per iteration: {average_time} s')
-	return
-	predicted_output = forward_pattern_impl(**input, metadata=attn_metadata).cpu()
-	#print(f'{predicted_output.shape=}')
-	#print(f'{output.shape=}')
-
-	std_diff = (predicted_output - output).pow(2).sum().sqrt() / output.norm()
-	print(f'STD diff: {std_diff}')
-
 
 if __name__ == "__main__":
 	test_run_forward()

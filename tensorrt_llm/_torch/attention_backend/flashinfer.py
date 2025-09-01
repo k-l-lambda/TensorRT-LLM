@@ -407,18 +407,9 @@ class FlashInferAttentionMetadata(AttentionMetadata):
             #block_mask_map = block_mask_map & (ones > torch.rand_like(ones) / 0.9)
             block_mask_map = block_sparse_mask(block_mask_map)
             block_mask_map = block_mask_map.bool().cuda()
-            print(f'{block_mask_map=}')
+            #print(f'{block_mask_map=}')
             #print(f'{block_mask_map.shape=}')
 
-            #print(F'{block_mask_map.shape=}')
-            #print(F'{block_row_sz.shape=}')
-            #print(F'{block_col_sz.shape=}')
-            #print(f'{block_row_sz.sum()=}')
-            #print(f'{block_col_sz.sum()=}')
-            #print(F'{num_qo_heads=}')
-            #print(F'{num_kv_heads=}')
-            #print(F'{head_dim=}')
-            #print(F'{plan_params.q_dtype=}')
             if M > 0 and MB > 0:
                 prefill_wrapper.plan(
                     block_mask_map=block_mask_map,
