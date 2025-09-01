@@ -376,7 +376,16 @@ class FlashInferAttentionMetadata(AttentionMetadata):
             #print(f'{M=}')
             #print(f'{block_row_sz=}')
             #print(f'{block_row_sz.sum()=}')
-            block_mask_map = torch.ones((num_kv_heads, MB, NB), dtype=torch.bool, device="cuda")  # dense mask
+            # Create a causal block mask: only allow attending to current and previous blocks (upper triangular)
+            block_mask_map = torch.ones((num_kv_heads, MB, NB), dtype=torch.bool, device="cuda")
+            if MB > 0 and NB > 0:
+                triu_mask = torch.triu(torch.ones((MB, NB), dtype=torch.bool, device="cuda"))
+                block_mask_map = block_mask_map & triu_mask.transpose(-1, -2)  # broadcast over num_kv_heads
+            #block_mask_map = torch.ones((num_kv_heads, MB, NB))
+            #block_mask_map = block_mask_map > torch.rand_like(block_mask_map) / 0.99
+            #block_mask_map = block_mask_map.bool().cuda()
+            #print(f'{block_mask_map=}')
+            #print(f'{block_mask_map.shape=}')
 
             #print(F'{block_mask_map.shape=}')
             #print(F'{block_row_sz.shape=}')
@@ -387,16 +396,17 @@ class FlashInferAttentionMetadata(AttentionMetadata):
             #print(F'{num_kv_heads=}')
             #print(F'{head_dim=}')
             #print(F'{plan_params.q_dtype=}')
-            prefill_wrapper.plan(
-                block_mask_map=block_mask_map,
-                block_row_sz=block_row_sz,
-                block_col_sz=block_col_sz,
-                num_qo_heads=num_qo_heads,
-                num_kv_heads=num_kv_heads,
-                head_dim=head_dim,
-                q_data_type=plan_params.q_dtype,
-                causal=is_causal,
-            )
+            if M > 0 and MB > 0:
+                prefill_wrapper.plan(
+                    block_mask_map=block_mask_map,
+                    block_row_sz=block_row_sz,
+                    block_col_sz=block_col_sz,
+                    num_qo_heads=num_qo_heads,
+                    num_kv_heads=num_kv_heads,
+                    head_dim=head_dim,
+                    q_data_type=plan_params.q_dtype,
+                    causal=is_causal,
+                )
 
         #def prefill_plan():
         #    prefill_wrapper.plan(
@@ -684,7 +694,7 @@ def forward_pattern_impl(
             v_ctx = v[:num_ctx_tokens].transpose(0, 1).contiguous().to(device=device, dtype=dtype)
             #print(f'{q_ctx.shape=}, {q_ctx.dtype=}, {k_ctx.shape=}, {k_ctx.dtype=}, {v_ctx.shape=}, {v_ctx.dtype=}')
             output = wrapper.run(q_ctx, k_ctx, v_ctx)
-            output = output.view(num_ctx_tokens, -1)
+            output = output.transpose(0, 1).reshape(num_ctx_tokens, -1)
             return output
         else:
             return torch.empty((0, q.shape[-1]), dtype=q.dtype, device=q.device)
