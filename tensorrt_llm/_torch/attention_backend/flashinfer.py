@@ -27,6 +27,28 @@ except RuntimeError:
     os.environ["TORCH_CUDA_ARCH_LIST"] = arch_list
 
 
+def block_sparse_mask (base_mask, num_local_blocks=16, vertical_stride=16, homo_head_pattern=True) -> torch.Tensor:
+    H, M, N = base_mask.shape
+    row_idx = torch.arange(M).view(-1, 1).expand(M, N)
+    col_idx = torch.arange(N).view(1, -1).expand(M, N)
+    block_local_mask = (row_idx - col_idx) < num_local_blocks
+
+    head_sliding_step = 0 if homo_head_pattern else max(1, vertical_stride // H)
+
+    head_idx = torch.arange(H).view(-1, 1, 1)
+    block_col_idx_b = col_idx.unsqueeze(0).expand(H, M, N)
+    block_vertical_stride_mask = ((block_col_idx_b + head_idx * head_sliding_step + 1) % vertical_stride) == 0
+
+    causal_mask = (col_idx <= row_idx).unsqueeze(0).expand(H, M, N)
+    block_local_mask_b = block_local_mask.unsqueeze(0).expand(H, M, N)
+
+    combined_mask = causal_mask & (block_local_mask_b | block_vertical_stride_mask)
+    #combined_mask = causal_mask
+    #print(f'{combined_mask.shape=}, {combined_mask=}')
+
+    return combined_mask
+
+
 @dataclass(kw_only=True, frozen=True)
 class PlanParams:
     """
@@ -377,14 +399,15 @@ class FlashInferAttentionMetadata(AttentionMetadata):
             #print(f'{block_row_sz=}')
             #print(f'{block_row_sz.sum()=}')
             # Create a causal block mask: only allow attending to current and previous blocks (upper triangular)
-            block_mask_map = torch.ones((num_kv_heads, MB, NB), dtype=torch.bool, device="cuda")
-            if MB > 0 and NB > 0:
-                triu_mask = torch.triu(torch.ones((MB, NB), dtype=torch.bool, device="cuda"))
-                block_mask_map = block_mask_map & triu_mask.transpose(-1, -2)  # broadcast over num_kv_heads
-            #block_mask_map = torch.ones((num_kv_heads, MB, NB))
-            #block_mask_map = block_mask_map > torch.rand_like(block_mask_map) / 0.99
-            #block_mask_map = block_mask_map.bool().cuda()
-            #print(f'{block_mask_map=}')
+            block_mask_map = torch.ones((num_kv_heads, MB, NB), dtype=torch.bool)
+            #if MB > 0 and NB > 0:
+            #    triu_mask = torch.triu(torch.ones((MB, NB), dtype=torch.bool))
+            #    block_mask_map = block_mask_map & triu_mask.transpose(-1, -2)  # broadcast over num_kv_heads
+            #ones = torch.ones((num_kv_heads, MB, NB))
+            #block_mask_map = block_mask_map & (ones > torch.rand_like(ones) / 0.9)
+            block_mask_map = block_sparse_mask(block_mask_map)
+            block_mask_map = block_mask_map.bool().cuda()
+            print(f'{block_mask_map=}')
             #print(f'{block_mask_map.shape=}')
 
             #print(F'{block_mask_map.shape=}')
