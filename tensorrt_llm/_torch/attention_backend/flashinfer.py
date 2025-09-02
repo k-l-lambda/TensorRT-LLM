@@ -350,10 +350,12 @@ class FlashInferAttentionMetadata(AttentionMetadata):
         ] or (plan_params.num_heads // plan_params.num_kv_heads >= 4)
 
     def _plan_with_params(self, plan_params: PlanParams) -> PlanParams:
-        if not self.needs_plan(plan_params):
-            return plan_params
+        #if not self.needs_plan(plan_params):
+        #    print("_plan_with_params: not needs plan.")
+        #    return plan_params
 
         if self.is_cuda_graph and torch.cuda.is_current_stream_capturing():
+            return plan_params
             raise ValueError(
                 "Cannot plan() for flashinfer kernels while stream is capturing. "
                 "Make sure you run a few warmup runs before capturing the graph!"
@@ -361,7 +363,8 @@ class FlashInferAttentionMetadata(AttentionMetadata):
 
         is_causal = plan_params.attention_mask_type == AttentionMaskType.causal
 
-        if plan_params in self._plan_params_to_wrappers:
+        if plan_params in self._plan_params_to_wrappers and False:
+            print("_plan_with_params: plan_params in self._plan_params_to_wrappers.")
             prefill_wrapper = self._plan_params_to_wrappers[
                 plan_params].prefill_wrapper
         else:
@@ -377,6 +380,7 @@ class FlashInferAttentionMetadata(AttentionMetadata):
             #    use_cuda_graph=self.is_cuda_graph)
             workspace_buffer = self.workspace_buffer
             prefill_wrapper = VariableBlockSparseAttentionWrapper(workspace_buffer, backend="auto")
+            #print("_plan_with_params: new VariableBlockSparseAttentionWrapper.")
 
             block_size = 64
             M = self._qo_indptr[self.num_contexts].item() if hasattr(self, '_qo_indptr') else 0
@@ -712,26 +716,6 @@ def forward_pattern_impl(
             return output
         else:
             return torch.empty((0, q.shape[-1]), dtype=q.dtype, device=q.device)
-
-#    def prefill_forward(plan_params: PlanParams):
-#        qq = q[:num_ctx_tokens]
-#        q_len = qq.shape[0]
-#        qq = qq.view(1, q_len, num_heads, head_dim).transpose(1, 2)
-#
-#        key_states = k[None].transpose(1, 2).to(q.dtype)
-#        value_states = v[None].transpose(1, 2).to(q.dtype)
-#
-#        num_key_value_groups = num_heads // num_kv_heads
-#        key_states = repeat_kv(key_states, num_key_value_groups)
-#        value_states = repeat_kv(value_states, num_key_value_groups)
-#
-#        cache_position = torch.arange(0, q_len, device=q.device)
-#        attn_mask = generate_causal_mask(1, q_len, cache_position, q.device) if q_len > 1 else None
-#
-#        #attn_output = torch.nn.functional.scaled_dot_product_attention(qq, key_states, value_states, is_causal=True, attn_mask=attn_mask)
-#        attn_output = sdpa.sparse(qq, key_states, value_states, attn_mask)
-#        #print(f'{attn_output.shape=}')
-#        return attn_output.transpose(1, 2).contiguous().view(q_len, -1)
 
     def decode_forward(plan_params: PlanParams):
         wrapper = metadata.get_decode_wrapper(plan_params)
