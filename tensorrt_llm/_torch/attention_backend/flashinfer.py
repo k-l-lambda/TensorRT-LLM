@@ -386,8 +386,8 @@ class FlashInferAttentionMetadata(AttentionMetadata):
             M = self._qo_indptr[self.num_contexts].item() if hasattr(self, '_qo_indptr') else 0
             N = M
 
-            MB = M // block_size
-            NB = N // block_size
+            MB = (M + block_size - 1) // block_size
+            NB = (N + block_size - 1) // block_size
 
             num_qo_heads = plan_params.num_heads
             num_kv_heads = plan_params.num_kv_heads
